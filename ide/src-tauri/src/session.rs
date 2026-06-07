@@ -12,6 +12,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 /// Per-session scrollback cap so a discarded tile can be restored on return.
@@ -127,6 +128,13 @@ impl SessionManager {
             let mut tail = eterm_core::OutputTail::new(8192);
             let mut waiting = false;
             let mut options: Vec<String> = Vec::new();
+            // Prompt detection is the per-chunk hot path; during a burst of output
+            // (a build, a log dump) re-running it on every 8KB chunk throttles the
+            // reader and makes the terminal feel laggy. Rate-limit it — a prompt
+            // lands when output *settles*, so ~120ms resolution is imperceptible.
+            let mut last_detect = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now);
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
@@ -135,20 +143,23 @@ impl SessionManager {
                         tail.push(&buf[..n]);
                         // Detect blocking-on-input transitions (+ parsed menu
                         // choices) for the rail, agent list, and home summary.
-                        let info = eterm_core::detect_prompt(tail.text());
-                        let now_waiting = info.is_some();
-                        let now_options = info.map(|i| i.options).unwrap_or_default();
-                        if now_waiting != waiting || now_options != options {
-                            waiting = now_waiting;
-                            options = now_options.clone();
-                            let _ = ev_app.emit(
-                                "agent-waiting",
-                                WaitingEvent {
-                                    id: ev_id.clone(),
-                                    waiting,
-                                    options: now_options,
-                                },
-                            );
+                        if last_detect.elapsed() >= Duration::from_millis(120) {
+                            last_detect = Instant::now();
+                            let info = eterm_core::detect_prompt(tail.text());
+                            let now_waiting = info.is_some();
+                            let now_options = info.map(|i| i.options).unwrap_or_default();
+                            if now_waiting != waiting || now_options != options {
+                                waiting = now_waiting;
+                                options = now_options.clone();
+                                let _ = ev_app.emit(
+                                    "agent-waiting",
+                                    WaitingEvent {
+                                        id: ev_id.clone(),
+                                        waiting,
+                                        options: now_options,
+                                    },
+                                );
+                            }
                         }
                         {
                             let mut s = sb.lock().unwrap();

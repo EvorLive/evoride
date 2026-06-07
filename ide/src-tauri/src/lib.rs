@@ -50,6 +50,12 @@ fn open_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// "Stick out" the IDE: float this window above other apps (always-on-top).
+#[tauri::command]
+fn set_always_on_top(window: tauri::WebviewWindow, on: bool) -> Result<(), String> {
+    window.set_always_on_top(on).map_err(|e| e.to_string())
+}
+
 // --- projects ---
 
 #[tauri::command]
@@ -253,18 +259,66 @@ fn agent_scrollback(manager: State<SessionManager>, id: String) -> String {
 /// Ask the hidden helper (claude/codex) to classify an idle agent's state.
 /// Returns `None` when no helper is configured or it failed — the frontend then
 /// keeps its regex-based guess. The helper is one-shot and never tracked.
+///
+/// This is `async` and runs the (blocking, multi-second) `claude -p` call on the
+/// blocking thread pool via `spawn_blocking`, so it never holds a Tauri command
+/// worker — keystrokes and other IPC stay responsive while the judge thinks.
 #[tauri::command]
-fn judge_agent(manager: State<SessionManager>, id: String) -> Option<judge::Judgement> {
+async fn judge_agent(
+    manager: State<'_, SessionManager>,
+    id: String,
+) -> Result<Option<judge::Judgement>, String> {
+    // Snapshot the tail synchronously (cheap), then hand the slow part off-thread.
     let bytes = manager.scrollback(&id);
     if bytes.is_empty() {
-        return None;
+        return Ok(None);
     }
     let stripped = eterm_core::strip_ansi(&bytes);
     let from = stripped.len().saturating_sub(3000);
     let from = (from..=stripped.len())
         .find(|&i| stripped.is_char_boundary(i))
         .unwrap_or(0);
-    judge::classify(&stripped[from..])
+    let tail = stripped[from..].to_string();
+    tauri::async_runtime::spawn_blocking(move || judge::classify(&tail))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Per-agent verdict returned by the batch judge.
+#[derive(serde::Serialize)]
+struct JudgeResult {
+    id: String,
+    judgement: Option<judge::Judgement>,
+}
+
+/// Classify several idle agents in ONE helper call. Reuses a single `claude -p`
+/// process for all of them instead of spawning one per agent — far cheaper when
+/// multiple agents go idle at once. Runs off-thread via `spawn_blocking`.
+#[tauri::command]
+async fn judge_agents(
+    manager: State<'_, SessionManager>,
+    ids: Vec<String>,
+) -> Result<Vec<JudgeResult>, String> {
+    // Snapshot each agent's tail synchronously (kept short to bound prompt size).
+    let items: Vec<(String, String)> = ids
+        .iter()
+        .map(|id| {
+            let stripped = eterm_core::strip_ansi(&manager.scrollback(id));
+            let from = stripped.len().saturating_sub(1500);
+            let from = (from..=stripped.len())
+                .find(|&i| stripped.is_char_boundary(i))
+                .unwrap_or(0);
+            (id.clone(), stripped[from..].to_string())
+        })
+        .collect();
+    let verdicts = tauri::async_runtime::spawn_blocking(move || judge::classify_batch(&items))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ids
+        .into_iter()
+        .zip(verdicts)
+        .map(|(id, judgement)| JudgeResult { id, judgement })
+        .collect())
 }
 
 /// Name of the available judge helper (e.g. "claude"), or `None`.
@@ -581,7 +635,9 @@ pub fn run() {
             mark_agent_exited,
             agent_scrollback,
             judge_agent,
+            judge_agents,
             judge_helper,
+            set_always_on_top,
             archive_agent,
             delete_agent,
             list_tasks,

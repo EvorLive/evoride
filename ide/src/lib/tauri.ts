@@ -252,6 +252,16 @@ export interface Judgement {
 export const judgeAgent = (id: string) => invoke<Judgement | null>("judge_agent", { id });
 export const judgeHelper = () => invoke<string | null>("judge_helper");
 
+export interface JudgeResult {
+  id: string;
+  judgement: Judgement | null;
+}
+/// Classify several idle agents in one helper call (batched, cheaper).
+export const judgeAgents = (ids: string[]) => invoke<JudgeResult[]>("judge_agents", { ids });
+
+/// "Stick out" the window — float it above other apps (always-on-top).
+export const setAlwaysOnTop = (on: boolean) => invoke("set_always_on_top", { on });
+
 export interface ExitInfo {
   hasError: boolean;
   context: string;

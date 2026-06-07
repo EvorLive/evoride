@@ -161,6 +161,98 @@ fn parse_judgement(s: &str) -> Option<Judgement> {
     })
 }
 
+fn build_batch_prompt(items: &[(String, String)]) -> String {
+    let mut p = String::from(
+        "You are monitoring several autonomous coding agents. For EACH agent's \
+terminal tail below, classify its CURRENT state. Reply with ONLY a JSON array of \
+exactly N objects, in the SAME ORDER as the agents, each object:\n\
+{\"state\":\"working|waiting_passive|waiting_active\",\"needs_input\":true|false,\
+\"summary\":\"<=8 words\",\"options\":[\"...\"]}\n\
+Definitions:\n\
+- working: still running a task or producing output; no user action needed.\n\
+- waiting_passive: idle at its normal input box; nothing required.\n\
+- waiting_active: blocking on a question/permission/menu that needs the user NOW \
+(put any explicit choices in \"options\").\n\n",
+    );
+    for (i, (_, tail)) in items.iter().enumerate() {
+        p.push_str(&format!("Agent {} tail:\n<<<\n{}\n>>>\n\n", i + 1, tail));
+    }
+    p
+}
+
+/// Pull a JSON array of N verdicts out of helper stdout.
+fn parse_batch(s: &str, n: usize, helper: &str) -> Vec<Option<Judgement>> {
+    let none = || std::iter::repeat_with(|| None).take(n).collect::<Vec<_>>();
+    let (Some(start), Some(end)) = (s.find('['), s.rfind(']')) else {
+        return none();
+    };
+    if end < start {
+        return none();
+    }
+    let Ok(raws) = serde_json::from_str::<Vec<Raw>>(&s[start..=end]) else {
+        return none();
+    };
+    let mut out: Vec<Option<Judgement>> = raws
+        .into_iter()
+        .map(|raw| Some(normalize(raw, helper)))
+        .collect();
+    out.resize_with(n, || None);
+    out
+}
+
+fn normalize(raw: Raw, helper: &str) -> Judgement {
+    let state = match raw.state.as_str() {
+        "working" | "waiting_passive" | "waiting_active" => raw.state.clone(),
+        _ if raw.needs_input => "waiting_active".to_string(),
+        _ => "waiting_passive".to_string(),
+    };
+    let needs_input = raw.needs_input || state == "waiting_active";
+    Judgement {
+        state,
+        needs_input,
+        summary: raw.summary,
+        options: raw.options.into_iter().take(9).collect(),
+        helper: helper.to_string(),
+    }
+}
+
+/// Classify MANY agents in a single helper invocation (amortizes the multi-second
+/// `claude -p` startup across all idle agents). Order matches the input; entries
+/// are `None` when no helper is available or parsing failed.
+pub fn classify_batch(items: &[(String, String)]) -> Vec<Option<Judgement>> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let Some(helper) = resolve() else {
+        return std::iter::repeat_with(|| None).take(items.len()).collect();
+    };
+    let prompt = build_batch_prompt(items);
+    let mut cmd = Command::new(&helper.program);
+    match helper.kind {
+        Kind::Claude => {
+            if helper.args.is_empty() {
+                cmd.arg("-p");
+            } else {
+                cmd.args(&helper.args);
+            }
+            cmd.arg(&prompt);
+        }
+        Kind::Codex => {
+            if helper.args.is_empty() {
+                cmd.arg("exec");
+            } else {
+                cmd.args(&helper.args);
+            }
+            cmd.arg(&prompt);
+        }
+    }
+    // A little more headroom than the single call — it's reasoning about N tails.
+    match run_with_timeout(cmd, 35) {
+        Some(stdout) => parse_batch(&String::from_utf8_lossy(&stdout), items.len(), &helper.program),
+        None => std::iter::repeat_with(|| None).take(items.len()).collect(),
+    }
+}
+
 /// Classify an agent's terminal `tail`. Returns `None` if no helper is available
 /// or the helper failed/timed out (caller falls back to the regex heuristic).
 pub fn classify(tail: &str) -> Option<Judgement> {

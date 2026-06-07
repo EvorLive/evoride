@@ -17,13 +17,27 @@ function GridIcon() {
 // A multi-terminal workspace: a responsive grid of live agent terminals, pinned
 // from any project. Pull in a running agent or spawn a new one — all tiles render
 // their xterm simultaneously (that's the point of this view).
+interface Workspace {
+  id: string;
+  name: string;
+  tiles: string[];
+}
+
 export default function GridWorkspace({
   tileIds,
+  maxTiles,
+  live,
   agentsById,
   projectsById,
   runningList,
   inactiveAgents,
   projects,
+  workspaces,
+  activeWs,
+  onSwitchWs,
+  onNewWs,
+  onCloseWs,
+  onRenameWs,
   menu,
   onMenu,
   onAddRunning,
@@ -32,11 +46,20 @@ export default function GridWorkspace({
   onRemoveTile,
 }: {
   tileIds: string[];
+  maxTiles: number;
+  /** Agent ids that currently have a live pty (vs. saved-but-stopped tiles). */
+  live: Set<string>;
   agentsById: Record<string, AgentRecord>;
   projectsById: Record<string, Project>;
   runningList: AgentRecord[];
   inactiveAgents: AgentRecord[];
   projects: Project[];
+  workspaces: Workspace[];
+  activeWs: string;
+  onSwitchWs: (id: string) => void;
+  onNewWs: () => void;
+  onCloseWs: (id: string) => void;
+  onRenameWs: (id: string, name: string) => void;
   /** Which overlay is open ("pull"/"new") — controlled by the parent so the
    *  command palette can open it too. */
   menu: "pull" | "new" | null;
@@ -46,6 +69,7 @@ export default function GridWorkspace({
   onSpawn: (projectId: string, command: string, title: string) => void;
   onRemoveTile: (id: string) => void;
 }) {
+  const full = tileIds.length >= maxTiles;
   // Pull overlay is a two-step picker: project first, then agent.
   const [pullProject, setPullProject] = useState<string | null>(null);
   // Reset the project step whenever the pull overlay (re)opens.
@@ -83,14 +107,46 @@ export default function GridWorkspace({
     <div className="grid-toolbar">
       <div className="grid-toolbar-title">
         <GridIcon />
-        <span>Workspace</span>
+        {/* Workspace tabs: switch, rename (double-click), close, add. */}
+        <div className="ws-tabs">
+          {workspaces.map((w) => (
+            <span
+              key={w.id}
+              className={`ws-tab ${w.id === activeWs ? "active" : ""}`}
+              onClick={() => onSwitchWs(w.id)}
+              onDoubleClick={() => {
+                const name = window.prompt("Rename workspace", w.name);
+                if (name && name.trim()) onRenameWs(w.id, name.trim());
+              }}
+              title={`${w.name} · ${w.tiles.length}/${maxTiles}${w.id === activeWs ? "" : " — click to switch"}`}
+            >
+              {w.name}
+              {workspaces.length > 1 && (
+                <button
+                  className="ws-tab-x"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCloseWs(w.id);
+                  }}
+                  title="Close workspace"
+                  aria-label="Close workspace"
+                >
+                  ✕
+                </button>
+              )}
+            </span>
+          ))}
+          <button className="ws-tab-add" onClick={onNewWs} title="New workspace">
+            ＋
+          </button>
+        </div>
         <span className="grid-toolbar-count">
-          {tileIds.length} terminal{tileIds.length === 1 ? "" : "s"}
+          {tileIds.length}/{maxTiles}
         </span>
       </div>
       <div className="grid-toolbar-actions">
         {/* Pull a running/inactive agent — opens the project→agent overlay. */}
-        <button className="btn-ghost" onClick={openPull}>
+        <button className="btn-ghost" onClick={openPull} disabled={full} title={full ? `Full (${maxTiles} max)` : undefined}>
           Pull agent ▾
         </button>
 
@@ -99,6 +155,8 @@ export default function GridWorkspace({
           <button
             className="btn-ghost"
             onClick={() => onMenu(menu === "new" ? null : "new")}
+            disabled={full}
+            title={full ? `Full (${maxTiles} max)` : undefined}
           >
             ＋ New agent ▾
           </button>
@@ -252,11 +310,12 @@ export default function GridWorkspace({
           </div>
         </div>
       ) : (
-        <div className="grid-tiles">
+        <div className="grid-tiles" data-count={tileIds.length}>
           {tileIds.map((id) => {
             const rec = agentsById[id];
             const title = rec?.title ?? "agent";
             const project = rec ? projName(rec.project_id) : "";
+            const isLive = live.has(id);
             return (
               <div key={id} className="grid-tile">
                 <div className="grid-tile-head">
@@ -275,7 +334,20 @@ export default function GridWorkspace({
                   </button>
                 </div>
                 <div className="grid-tile-body">
-                  <AgentTerminal id={id} active />
+                  {isLive ? (
+                    <AgentTerminal id={id} active />
+                  ) : (
+                    // Restored-but-stopped tile: resume its session on demand.
+                    <button
+                      className="grid-tile-resume"
+                      onClick={() => onResumeToGrid(id)}
+                      title="Resume this session"
+                    >
+                      <span className="grid-tile-resume-icon">↻</span>
+                      <span>Resume session</span>
+                      <span className="grid-tile-resume-sub">{title}</span>
+                    </button>
+                  )}
                 </div>
               </div>
             );

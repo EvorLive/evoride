@@ -166,6 +166,15 @@ pub fn detect_prompt(text: &str) -> Option<PromptInfo> {
         .unwrap_or(0);
     let tail = &text[start..];
 
+    // Cheap early-out: a prompt needs either a select cursor or a y/n marker.
+    // Without one, skip the line-splitting/parsing entirely — this is the common
+    // case for streaming build/log output and keeps the hot path fast.
+    let maybe_prompt = CURSOR_GLYPHS.chars().any(|g| tail.contains(g))
+        || PROMPT_SIGS.iter().any(|s| tail.contains(s));
+    if !maybe_prompt {
+        return None;
+    }
+
     // Lines, with trailing blank lines trimmed so "near the bottom" is measured
     // from the last line that actually has content.
     let mut lines: Vec<&str> = tail.lines().collect();

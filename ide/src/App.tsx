@@ -44,6 +44,15 @@ import "./App.css";
 
 const NEXT_STATUS = { todo: "doing", doing: "done", done: "todo" } as const;
 
+/** Max terminals per workspace — keeps each layout (full/split/3-way/quad) clean. */
+const MAX_TILES = 4;
+/** A named Workspace grid holding up to MAX_TILES pinned agent tiles. */
+interface Workspace {
+  id: string;
+  name: string;
+  tiles: string[];
+}
+
 export default function App() {
   // Top-level view: the cross-project Home dashboard, or the single-project
   // workspace. Defaults to Home on launch when projects exist.
@@ -89,17 +98,33 @@ export default function App() {
   const [hasJudge, setHasJudge] = useState(false);
   const lastOutputRef = useRef<Record<string, number>>({});
   const judgedRef = useRef<Record<string, number>>({});
-  const inFlightRef = useRef<Set<string>>(new Set());
-  // Multi-terminal "Workspace" grid: agent ids pinned as visible tiles. Persisted
-  // to localStorage and reconciled against actually-running agents on load.
-  const [gridAgents, setGridAgents] = useState<string[]>(() => {
+  // Multi-terminal "Workspace" grid. Several named workspaces, each holding up
+  // to MAX_TILES pinned agent tiles, persisted and reconciled on load.
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
     try {
-      const raw = localStorage.getItem("evoride-grid");
-      return raw ? (JSON.parse(raw) as string[]) : [];
+      const raw = localStorage.getItem("evoride-workspaces");
+      if (raw) {
+        const ws = JSON.parse(raw) as Workspace[];
+        if (Array.isArray(ws) && ws.length) return ws;
+      }
+      // Migrate the old single flat grid, if any.
+      const old = localStorage.getItem("evoride-grid");
+      const tiles = old ? (JSON.parse(old) as string[]).slice(0, MAX_TILES) : [];
+      return [{ id: "ws-1", name: "Workspace 1", tiles }];
     } catch {
-      return [];
+      return [{ id: "ws-1", name: "Workspace 1", tiles: [] }];
     }
   });
+  const [activeWs, setActiveWs] = useState<string>(
+    () => localStorage.getItem("evoride-active-ws") || "ws-1",
+  );
+  const activeWorkspace = workspaces.find((w) => w.id === activeWs) ?? workspaces[0];
+  const gridAgents = activeWorkspace?.tiles ?? [];
+  // Mutate the active workspace's tiles.
+  const setActiveTiles = (fn: (tiles: string[]) => string[]) =>
+    setWorkspaces((prev) =>
+      prev.map((w) => (w.id === activeWs ? { ...w, tiles: fn(w.tiles) } : w)),
+    );
   // Theme: follow system, or manual light/dark.
   const [theme, setTheme] = useState<"system" | "light" | "dark">(
     () => (localStorage.getItem("evoride-theme") as never) || "system",
@@ -110,6 +135,13 @@ export default function App() {
   }, [theme]);
   const cycleTheme = () =>
     setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system"));
+  // "Stick out" — keep the IDE window above other apps.
+  const [pinned, setPinned] = useState(() => localStorage.getItem("evoride-pinned") === "1");
+  useEffect(() => {
+    api.setAlwaysOnTop(pinned).catch(() => {});
+    localStorage.setItem("evoride-pinned", pinned ? "1" : "0");
+  }, [pinned]);
+  const togglePin = () => setPinned((p) => !p);
   const openPalette = (mode: "files" | "commands" = "commands") => {
     setPaletteMode(mode);
     setPaletteOpen(true);
@@ -264,17 +296,22 @@ export default function App() {
       return n;
     });
 
-  // On mount, drop any persisted grid tiles whose agent isn't actually running
-  // (avoids dead tiles that can't restore after a restart), and mark the rest live.
+  // On mount, RESTORE the saved workspaces. We keep every tile whose agent still
+  // exists (so the workspace comes back exactly as you left it) and mark the ones
+  // already running as live. Stopped tiles stay as "resume" placeholders and are
+  // re-attached lazily when you view them — no startup stampede of `claude
+  // --continue`. Only tiles whose agent was deleted entirely are dropped.
   useEffect(() => {
-    api
-      .runningAgents()
-      .then((rs) => {
-        const alive = new Set(rs.map((a) => a.id));
-        setGridAgents((prev) => prev.filter((id) => alive.has(id)));
+    Promise.all([api.runningAgents(), api.allAgents()])
+      .then(([running, all]) => {
+        const alive = new Set(running.map((a) => a.id));
+        const known = new Set(all.map((a) => a.id));
+        setWorkspaces((prev) =>
+          prev.map((w) => ({ ...w, tiles: w.tiles.filter((id) => known.has(id)) })),
+        );
         setLive((p) => {
           const n = new Set(p);
-          for (const id of gridAgents) if (alive.has(id)) n.add(id);
+          for (const w of workspaces) for (const id of w.tiles) if (alive.has(id)) n.add(id);
           return n;
         });
       })
@@ -282,35 +319,66 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist grid tiles whenever they change.
+  // Persist workspaces + which one is active.
   useEffect(() => {
-    localStorage.setItem("evoride-grid", JSON.stringify(gridAgents));
-  }, [gridAgents]);
+    localStorage.setItem("evoride-workspaces", JSON.stringify(workspaces));
+  }, [workspaces]);
+  useEffect(() => {
+    localStorage.setItem("evoride-active-ws", activeWs);
+  }, [activeWs]);
 
-  // Pull an already-running agent into the grid (no spawn).
+  // Is the active workspace full? (cap reached) — used to gate adds.
+  const gridFull = gridAgents.length >= MAX_TILES;
+
+  // Pull an already-running agent into the active workspace (no spawn).
   const addRunningToGrid = (id: string) => {
     addLive(id);
-    setGridAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setActiveTiles((prev) =>
+      prev.includes(id) || prev.length >= MAX_TILES ? prev : [...prev, id],
+    );
   };
-  // Spawn a fresh agent straight into the grid (don't touch project/view/active).
+  // Spawn a fresh agent straight into the active workspace.
   const spawnToGrid = async (projectId: string, command: string, title: string) => {
+    if (gridFull) return;
     const rec = await api.spawnAgent({
       projectId,
       title: title || "agent",
       command: command || undefined,
     });
     addLive(rec.id);
-    setGridAgents((prev) => [...prev, rec.id]);
+    setActiveTiles((prev) => (prev.length >= MAX_TILES ? prev : [...prev, rec.id]));
   };
-  // Resume a stopped agent and pin it into the grid (don't touch view/project).
+  // Resume a stopped agent. If it's already a tile (a restored placeholder),
+  // just bring its session back in place; otherwise pin it (respecting the cap).
   const onResumeToGrid = async (id: string) => {
+    const alreadyTiled = gridAgents.includes(id);
+    if (!alreadyTiled && gridFull) return;
     await api.resumeAgent(id).catch(() => {});
     addLive(id);
-    setGridAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    if (!alreadyTiled) {
+      setActiveTiles((prev) => (prev.length >= MAX_TILES ? prev : [...prev, id]));
+    }
   };
+  // Workspace management: add, switch, close, rename.
+  const addWorkspace = () => {
+    const n = workspaces.length + 1;
+    const id = `ws-${Date.now()}`;
+    setWorkspaces((prev) => [...prev, { id, name: `Workspace ${n}`, tiles: [] }]);
+    setActiveWs(id);
+  };
+  const closeWorkspace = (id: string) => {
+    setWorkspaces((prev) => {
+      if (prev.length <= 1) return prev; // keep at least one
+      const next = prev.filter((w) => w.id !== id);
+      if (id === activeWs) setActiveWs(next[0].id);
+      return next;
+    });
+  };
+  const renameWorkspace = (id: string, name: string) =>
+    setWorkspaces((prev) => prev.map((w) => (w.id === id ? { ...w, name } : w)));
   // Un-pin a tile (the agent keeps running).
   const removeTile = (id: string) =>
-    setGridAgents((prev) => prev.filter((x) => x !== id));
+    setActiveTiles((prev) => prev.filter((x) => x !== id));
 
   const openFolder = async () => {
     setMenuOpen(false);
@@ -663,55 +731,64 @@ export default function App() {
     return () => un?.();
   }, []);
 
-  // Once an agent has been idle a few seconds, ask the judge to classify it and
-  // reconcile the "needs you" flag — adding misses, clearing false positives.
+  // Once agents have been idle a few seconds, classify them — but in ONE batched
+  // helper call per tick (not one process per agent), reconciling the "needs you"
+  // flag: adding misses, clearing false positives, marking passively-idle ones.
   useEffect(() => {
     if (!hasJudge) return;
     const IDLE_MS = 5000;
+    let busy = false; // one batch in flight at a time
+    const applyVerdict = (id: string, j: api.Judgement | null) => {
+      if (!j) return;
+      const state = j.state === "waiting_active" ? "active" : j.state === "waiting_passive" ? "passive" : "working";
+      setAgentState((p) => ({ ...p, [id]: state }));
+      const active = j.needs_input || j.state === "waiting_active";
+      setWaitingAgents((p) => {
+        const has = p.has(id);
+        if (active === has) return p;
+        const n = new Set(p);
+        if (active) n.add(id);
+        else n.delete(id);
+        return n;
+      });
+      setWaitingOptions((p) => {
+        if (active && j.options.length) return { ...p, [id]: j.options };
+        if (!active && id in p) {
+          const { [id]: _drop, ...rest } = p;
+          return rest;
+        }
+        return p;
+      });
+    };
     const tick = () => {
-      if (document.hidden) return;
+      if (document.hidden || busy) return;
       const now = Date.now();
+      const due: string[] = [];
       for (const a of runningList) {
         const base = a.command.split(/\s+/)[0]?.split("/").pop() ?? "";
         if (base !== "claude" && base !== "codex") continue;
         const last = lastOutputRef.current[a.id];
         if (last === undefined) {
-          // First time we see it — start its idle clock now.
-          lastOutputRef.current[a.id] = now;
+          lastOutputRef.current[a.id] = now; // start its idle clock
           continue;
         }
         if (now - last < IDLE_MS) continue; // still actively producing output
         if ((judgedRef.current[a.id] ?? 0) >= last) continue; // judged this idle already
-        if (inFlightRef.current.has(a.id) || inFlightRef.current.size >= 2) continue;
-        inFlightRef.current.add(a.id);
-        judgedRef.current[a.id] = last;
-        api
-          .judgeAgent(a.id)
-          .then((j) => {
-            if (!j) return;
-            const state = j.state === "waiting_active" ? "active" : j.state === "waiting_passive" ? "passive" : "working";
-            setAgentState((p) => ({ ...p, [a.id]: state }));
-            const active = j.needs_input || j.state === "waiting_active";
-            setWaitingAgents((p) => {
-              const has = p.has(a.id);
-              if (active === has) return p;
-              const n = new Set(p);
-              if (active) n.add(a.id);
-              else n.delete(a.id);
-              return n;
-            });
-            setWaitingOptions((p) => {
-              if (active && j.options.length) return { ...p, [a.id]: j.options };
-              if (!active && a.id in p) {
-                const { [a.id]: _drop, ...rest } = p;
-                return rest;
-              }
-              return p;
-            });
-          })
-          .catch(() => {})
-          .finally(() => inFlightRef.current.delete(a.id));
+        due.push(a.id);
       }
+      if (!due.length) return;
+      const batch = due.slice(0, 6); // bound the prompt size
+      for (const id of batch) judgedRef.current[id] = lastOutputRef.current[id] ?? now;
+      busy = true;
+      api
+        .judgeAgents(batch)
+        .then((results) => {
+          for (const r of results) applyVerdict(r.id, r.judgement);
+        })
+        .catch(() => {})
+        .finally(() => {
+          busy = false;
+        });
     };
     const iv = setInterval(tick, 3000);
     return () => clearInterval(iv);
@@ -877,8 +954,9 @@ export default function App() {
       cmds.push({ id: "panel-edits", label: "Toggle Edits panel", hint: "Panel", run: () => setRightPanel((p) => (p === "edits" ? null : "edits")) });
     }
 
-    // Appearance (always).
+    // Appearance + window (always).
     cmds.push({ id: "toggle-theme", label: "Toggle theme", hint: "Appearance", run: cycleTheme });
+    cmds.push({ id: "toggle-pin", label: "Stick out (always on top)", hint: "Window", run: togglePin });
 
     return cmds;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -949,6 +1027,8 @@ export default function App() {
           runningCount={runningList.length}
           waitingCount={waitingAgents.size}
           onOpenPalette={() => openPalette("commands")}
+          pinned={pinned}
+          onTogglePin={togglePin}
           theme={theme}
           onCycleTheme={cycleTheme}
         />
@@ -979,11 +1059,19 @@ export default function App() {
           <Suspense fallback={<div className="grid-view" />}>
             <GridWorkspace
               tileIds={gridAgents}
+              maxTiles={MAX_TILES}
+              live={live}
               agentsById={agentsById}
               projectsById={projectsById}
               runningList={runningList}
               inactiveAgents={inactiveAgents}
               projects={knownProjects}
+              workspaces={workspaces}
+              activeWs={activeWs}
+              onSwitchWs={setActiveWs}
+              onNewWs={addWorkspace}
+              onCloseWs={closeWorkspace}
+              onRenameWs={renameWorkspace}
               menu={gridMenu}
               onMenu={setGridMenu}
               onAddRunning={addRunningToGrid}
@@ -998,6 +1086,8 @@ export default function App() {
           runningCount={runningList.length}
           waitingCount={waitingAgents.size}
           onOpenPalette={() => openPalette("commands")}
+          pinned={pinned}
+          onTogglePin={togglePin}
           theme={theme}
           onCycleTheme={cycleTheme}
         />

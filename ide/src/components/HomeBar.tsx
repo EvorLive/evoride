@@ -10,6 +10,8 @@ export default function HomeBar({
   evorConnected = false,
   onConnectEvor,
   onOpenPalette,
+  pinned = false,
+  onTogglePin,
   theme,
   onCycleTheme,
 }: {
@@ -20,6 +22,9 @@ export default function HomeBar({
   evorConnected?: boolean;
   onConnectEvor?: () => void;
   onOpenPalette?: () => void;
+  /** "Stick out" — window floats above other apps. */
+  pinned?: boolean;
+  onTogglePin?: () => void;
   theme: "system" | "light" | "dark";
   onCycleTheme: () => void;
 }) {
@@ -48,6 +53,15 @@ export default function HomeBar({
         {onOpenPalette && (
           <button className="status-theme" onClick={onOpenPalette} title="Command palette">
             ⌘P
+          </button>
+        )}
+        {onTogglePin && (
+          <button
+            className={`status-theme ${pinned ? "on" : ""}`}
+            onClick={onTogglePin}
+            title={pinned ? "Stuck out (always on top) — click to unstick" : "Stick out (always on top)"}
+          >
+            📌 {pinned ? "stuck" : "stick out"}
           </button>
         )}
         <button

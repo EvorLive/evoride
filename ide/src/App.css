@@ -2647,6 +2647,60 @@ body {
   color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
 }
+/* Workspace tabs */
+.ws-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ws-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.ws-tab:hover {
+  color: var(--fg);
+  border-color: var(--brand);
+}
+.ws-tab.active {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--brand) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+}
+.ws-tab-x {
+  border: none;
+  background: none;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0;
+  line-height: 1;
+}
+.ws-tab-x:hover {
+  color: var(--danger, var(--warn));
+}
+.ws-tab-add {
+  border: 1px dashed var(--border);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 7px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.ws-tab-add:hover {
+  color: var(--fg);
+  border-color: var(--brand);
+}
 .grid-toolbar-actions {
   display: flex;
   align-items: center;
@@ -2738,24 +2792,68 @@ body {
   gap: 2px;
 }
 
+/* Count-driven layouts that FILL the pane: 1 full · 2 split · 3 three-way
+   (tall-left + two stacked) · 4 quad. Tile count is capped at 4 upstream. */
 .grid-tiles {
   flex: 1;
   min-height: 0;
-  overflow: auto;
   padding: 14px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
   gap: 12px;
-  align-content: start;
+  grid-auto-rows: 1fr;
+}
+.grid-tiles[data-count="1"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+.grid-tiles[data-count="2"] {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+.grid-tiles[data-count="3"],
+.grid-tiles[data-count="4"] {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+/* 3-way: the first terminal takes the full-height left column. */
+.grid-tiles[data-count="3"] > .grid-tile:first-child {
+  grid-row: span 2;
 }
 .grid-tile {
   display: flex;
   flex-direction: column;
-  height: 320px;
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   overflow: hidden;
+}
+/* Restored-but-stopped tile: a click-to-resume placeholder. */
+.grid-tile-resume {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-muted);
+  font: inherit;
+}
+.grid-tile-resume:hover {
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
+  color: var(--fg);
+}
+.grid-tile-resume-icon {
+  font-size: 22px;
+  color: var(--brand);
+}
+.grid-tile-resume-sub {
+  font-size: 11px;
+  color: var(--fg-subtle);
 }
 .grid-tile-head {
   display: flex;

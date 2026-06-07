@@ -7,6 +7,7 @@
     "core:default",
     "core:menu:default",
     "core:window:allow-set-title",
+    "core:window:allow-set-always-on-top",
     "opener:default",
     "dialog:default"
   ]
