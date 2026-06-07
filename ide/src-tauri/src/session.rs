@@ -1,0 +1,259 @@
+//! Multi-agent pty session manager for the IDE.
+//!
+//! Each "agent" is a real pty (a shell, `claude`, `codex`, …) running in its own
+//! working directory. Output is streamed to the frontend as base64 over a Tauri
+//! event; xterm.js in each tile handles the terminal emulation. This keeps the
+//! backend thin — it pipes bytes and tracks process liveness.
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter};
+
+/// Per-session scrollback cap so a discarded tile can be restored on return.
+const SCROLLBACK_CAP: usize = 512 * 1024;
+
+/// Public, serializable description of an agent session.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentInfo {
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    pub command: String,
+    pub running: bool,
+}
+
+/// Payload for the `pty-output` event.
+#[derive(Clone, Serialize)]
+struct OutputEvent {
+    id: String,
+    /// base64-encoded raw pty bytes.
+    data: String,
+}
+
+/// Payload for the `pty-exit` event — includes issue detection for "fix this".
+#[derive(Clone, Serialize)]
+struct ExitEvent {
+    id: String,
+    /// True if the output contained a failure signature.
+    has_error: bool,
+    /// Tail of recent output, used as fix context.
+    context: String,
+}
+
+/// Payload for the `agent-waiting` event (blocking on user input).
+#[derive(Clone, Serialize)]
+struct WaitingEvent {
+    id: String,
+    waiting: bool,
+}
+
+struct Session {
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn Child + Send + Sync>,
+    /// Recent output, so a discarded (Chrome-style) tile can be restored.
+    scrollback: Arc<Mutex<Vec<u8>>>,
+}
+
+#[derive(Default)]
+pub struct SessionManager {
+    sessions: Mutex<HashMap<String, Session>>,
+}
+
+impl SessionManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Spawn a new agent pty (with a caller-supplied id, so it matches the
+    /// store record) and start streaming its output to the frontend.
+    pub fn spawn(
+        &self,
+        app: AppHandle,
+        id: String,
+        title: String,
+        cwd: String,
+        command: String,
+        edits_path: String,
+        rows: u16,
+        cols: u16,
+    ) -> Result<AgentInfo, String> {
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("openpty: {e}"))?;
+
+        let mut cmd = build_command(&command);
+        cmd.cwd(&cwd);
+        cmd.env("TERM", "xterm-256color");
+        // Per-agent edit tracking: the agent's id + where to log files it edits.
+        cmd.env("EVORIDE_AGENT_ID", &id);
+        cmd.env("EVORIDE_EDITS", &edits_path);
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("spawn: {e}"))?;
+        drop(pair.slave);
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("reader: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("writer: {e}"))?;
+
+        // Reader thread: pump pty output to the frontend until EOF.
+        let scrollback = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let ev_id = id.clone();
+        let ev_app = app.clone();
+        let sb = scrollback.clone();
+        std::thread::spawn(move || {
+            // Rolling tail (shared eterm-core) for issue detection on exit.
+            let mut tail = eterm_core::OutputTail::new(8192);
+            let mut waiting = false;
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        tail.push(&buf[..n]);
+                        // Detect blocking-on-input transitions for the project rail.
+                        let now_waiting = eterm_core::has_input_prompt(tail.text());
+                        if now_waiting != waiting {
+                            waiting = now_waiting;
+                            let _ = ev_app.emit(
+                                "agent-waiting",
+                                WaitingEvent {
+                                    id: ev_id.clone(),
+                                    waiting,
+                                },
+                            );
+                        }
+                        {
+                            let mut s = sb.lock().unwrap();
+                            s.extend_from_slice(&buf[..n]);
+                            let len = s.len();
+                            if len > SCROLLBACK_CAP {
+                                s.drain(0..len - SCROLLBACK_CAP);
+                            }
+                        }
+                        let data = B64.encode(&buf[..n]);
+                        let _ = ev_app.emit(
+                            "pty-output",
+                            OutputEvent {
+                                id: ev_id.clone(),
+                                data,
+                            },
+                        );
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = ev_app.emit(
+                "agent-waiting",
+                WaitingEvent {
+                    id: ev_id.clone(),
+                    waiting: false,
+                },
+            );
+            let _ = ev_app.emit(
+                "pty-exit",
+                ExitEvent {
+                    id: ev_id,
+                    has_error: tail.has_error(),
+                    context: tail.text().to_string(),
+                },
+            );
+        });
+
+        let info = AgentInfo {
+            id: id.clone(),
+            title,
+            cwd,
+            command,
+            running: true,
+        };
+
+        let session = Session {
+            master: pair.master,
+            writer,
+            child,
+            scrollback,
+        };
+        self.sessions.lock().unwrap().insert(id, session);
+        Ok(info)
+    }
+
+    pub fn write_input(&self, id: &str, data: &str) -> Result<(), String> {
+        let mut map = self.sessions.lock().unwrap();
+        let s = map.get_mut(id).ok_or("no such agent")?;
+        s.writer
+            .write_all(data.as_bytes())
+            .map_err(|e| e.to_string())?;
+        s.writer.flush().map_err(|e| e.to_string())
+    }
+
+    pub fn resize(&self, id: &str, rows: u16, cols: u16) -> Result<(), String> {
+        let map = self.sessions.lock().unwrap();
+        let s = map.get(id).ok_or("no such agent")?;
+        s.master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn close(&self, id: &str) -> Result<(), String> {
+        if let Some(mut s) = self.sessions.lock().unwrap().remove(id) {
+            let _ = s.child.kill();
+        }
+        Ok(())
+    }
+
+    /// Snapshot of a session's scrollback for restoring a discarded tile.
+    pub fn scrollback(&self, id: &str) -> Vec<u8> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|s| s.scrollback.lock().unwrap().clone())
+            .unwrap_or_default()
+    }
+
+    /// Kill every running agent — used on app exit so no pty/service is orphaned.
+    pub fn kill_all(&self) {
+        let mut map = self.sessions.lock().unwrap();
+        for s in map.values_mut() {
+            let _ = s.child.kill();
+        }
+        map.clear();
+    }
+}
+
+/// Split a command string into program + args (whitespace-naive, good enough
+/// for `claude`, `codex`, or a bare shell; quote-aware parsing can come later).
+fn build_command(command: &str) -> CommandBuilder {
+    let mut parts = command.split_whitespace();
+    let program = parts.next().unwrap_or("/bin/sh");
+    let mut cmd = CommandBuilder::new(program);
+    for arg in parts {
+        cmd.arg(arg);
+    }
+    cmd
+}

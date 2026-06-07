@@ -1,0 +1,20 @@
+[package]
+name = "eterm"
+edition.workspace = true
+version.workspace = true
+description = "A smart terminal: real pty shell with opt-in cloud session sync"
+
+[dependencies]
+shared.workspace = true
+eterm-core = { path = "../core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"
+portable-pty = "0.8"
+vt100 = "0.15"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+tungstenite = "0.24"
+regex = "1"

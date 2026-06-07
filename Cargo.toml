@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["tui", "server", "shared", "core"]
+# The Tauri IDE manages its own build (heavy wry/tao tree) and stays decoupled.
+exclude = ["ide"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+shared = { path = "shared" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+strip = true
