@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EvorIde — agentic development with any agent</title>
+    <meta
+      name="description"
+      content="EvorIde is an open, terminal-first workspace for running and steering coding agents (Claude Code, Codex, or any CLI) across your projects."
+    />
+    <style>
+      :root {
+        --bg: #090b11;
+        --surface: #0f131b;
+        --surface-2: #161b25;
+        --border: #232a37;
+        --fg: #e6e8ee;
+        --fg-muted: #9aa3b2;
+        --fg-subtle: #5b6473;
+        --brand: #38bdf8;
+        --live: #4ade80;
+        --warn: #fbbf24;
+      }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      a { color: var(--brand); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+
+      header.hero {
+        text-align: center;
+        padding: 96px 24px 64px;
+        border-bottom: 1px solid var(--border);
+        background: radial-gradient(
+          900px 360px at 50% -10%,
+          color-mix(in srgb, var(--brand) 14%, transparent),
+          transparent
+        );
+      }
+      .logo {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        font-size: 18px;
+        letter-spacing: -0.01em;
+      }
+      .logo .mark { color: var(--brand); }
+      h1 {
+        font-size: clamp(34px, 6vw, 54px);
+        line-height: 1.05;
+        margin: 22px 0 12px;
+        letter-spacing: -0.02em;
+      }
+      .tagline { color: var(--fg-muted); font-size: 18px; max-width: 620px; margin: 0 auto 28px; }
+      .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 18px;
+        border-radius: 9px;
+        font-weight: 600;
+        font-size: 15px;
+        border: 1px solid var(--border);
+      }
+      .btn.primary { background: var(--brand); color: #04121b; border-color: transparent; }
+      .btn.primary:hover { text-decoration: none; filter: brightness(1.05); }
+      .btn.ghost { color: var(--fg); background: var(--surface); }
+      .btn.ghost:hover { text-decoration: none; border-color: var(--brand); }
+      .alpha {
+        display: inline-block;
+        margin-top: 20px;
+        font-size: 12px;
+        color: var(--warn);
+        border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+        background: color-mix(in srgb, var(--warn) 8%, transparent);
+        padding: 4px 10px;
+        border-radius: 20px;
+      }
+
+      section { padding: 56px 0; border-bottom: 1px solid var(--border); }
+      h2 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.01em; }
+      .sub { color: var(--fg-muted); margin: 0 0 28px; }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 14px;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 18px;
+      }
+      .card h3 { margin: 0 0 6px; font-size: 16px; }
+      .card p { margin: 0; color: var(--fg-muted); font-size: 14px; }
+
+      ol.steps { counter-reset: step; list-style: none; padding: 0; }
+      ol.steps > li {
+        position: relative;
+        padding: 0 0 22px 52px;
+        margin: 0;
+      }
+      ol.steps > li::before {
+        counter-increment: step;
+        content: counter(step);
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        background: color-mix(in srgb, var(--brand) 16%, var(--surface));
+        border: 1px solid color-mix(in srgb, var(--brand) 40%, var(--border));
+        color: var(--brand);
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      ol.steps > li:not(:last-child)::after {
+        content: "";
+        position: absolute;
+        left: 17px;
+        top: 38px;
+        bottom: 2px;
+        width: 1px;
+        background: var(--border);
+      }
+      ol.steps b { font-weight: 600; }
+
+      pre {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        overflow: auto;
+        font-size: 13px;
+        color: var(--fg);
+      }
+      kbd {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        border-radius: 6px;
+        padding: 1px 7px;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+      }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+      th { color: var(--fg-subtle); font-weight: 600; }
+
+      footer { padding: 40px 0 64px; color: var(--fg-subtle); font-size: 14px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <script>
+      window.REPO = "https://github.com/EvorLive/evoride";
+    </script>
+
+    <header class="hero">
+      <div class="wrap">
+        <div class="logo"><span class="mark">▮</span> EvorIde</div>
+        <h1>Agentic development<br />with <em>any</em> agent.</h1>
+        <p class="tagline">
+          An open, terminal-first workspace for running, watching, and steering
+          Claude Code, Codex, or any CLI agent — across all your projects, from one window.
+        </p>
+        <div class="cta">
+          <a class="btn primary" id="download" href="#">Download</a>
+          <a class="btn ghost" id="repo" href="#">View on GitHub</a>
+          <a class="btn ghost" href="#start">Get started</a>
+        </div>
+        <div><span class="alpha">⚠ Early / alpha — built in the open, expect rough edges</span></div>
+      </div>
+    </header>
+
+    <section id="what">
+      <div class="wrap">
+        <h2>What it is</h2>
+        <p class="sub">Agent-agnostic. Project-centric. Intent-first.</p>
+        <div class="grid">
+          <div class="card">
+            <h3>Any agent</h3>
+            <p>If it runs in a shell — <code>claude</code>, <code>codex</code>, or your own — EvorIde can host it. No lock-in.</p>
+          </div>
+          <div class="card">
+            <h3>Many agents, many projects</h3>
+            <p>Run several agents at once; a rail shows which projects are busy and which are <b>waiting for you</b>.</p>
+          </div>
+          <div class="card">
+            <h3>The “why” in your repo</h3>
+            <p>Goals &amp; decisions live in <code>.intentflow/</code>, credited to the person and the agent used.</p>
+          </div>
+          <div class="card">
+            <h3>Fix it &amp; track it</h3>
+            <p>One-click fix-this-issue when a command errors, plus per-agent edit tracking.</p>
+          </div>
+          <div class="card">
+            <h3>Lightweight</h3>
+            <p>Built with Tauri — uses the system WebView (no bundled Chromium). A few MB, not hundreds.</p>
+          </div>
+          <div class="card">
+            <h3>Familiar</h3>
+            <p>Command palette (<kbd>⌘P</kbd>), light/dark themes, a real editor, and git built in.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="install">
+      <div class="wrap">
+        <h2>Install</h2>
+        <p class="sub">Grab a prebuilt installer, or build from source.</p>
+
+        <h3>Download (recommended)</h3>
+        <p>
+          Head to the <a id="releases" href="#">Releases</a> page and download the
+          installer for your OS:
+        </p>
+        <table>
+          <tr><th>macOS</th><td><code>.dmg</code> (universal — Apple Silicon &amp; Intel)</td></tr>
+          <tr><th>Windows</th><td><code>.msi</code> / <code>.exe</code></td></tr>
+          <tr><th>Linux</th><td><code>.AppImage</code> / <code>.deb</code></td></tr>
+        </table>
+
+        <h3 style="margin-top:26px">Build from source</h3>
+        <p>Prereqs: <a href="https://rustup.rs">Rust</a>, Node 20+, <a href="https://pnpm.io">pnpm</a>, and the <a href="https://tauri.app/start/prerequisites/">Tauri prerequisites</a>.</p>
+        <pre>git clone $REPO
+cd evoride/ide
+pnpm install
+pnpm tauri dev      # run it
+pnpm tauri build    # produce an installer</pre>
+      </div>
+    </section>
+
+    <section id="start">
+      <div class="wrap">
+        <h2>Get started in 4 steps</h2>
+        <p class="sub">From launch to your first agent.</p>
+        <ol class="steps">
+          <li><b>Open a project.</b> Hit <em>Open folder</em> (or <kbd>⌘P</kbd> → “Open project…”) and pick a repo.</li>
+          <li><b>Start an agent.</b> Click <em>＋ New</em> and choose <b>Claude</b>, <b>Codex</b>, or a plain shell. It opens as a real terminal.</li>
+          <li><b>Work &amp; navigate.</b> Switch agents in the left column, open files with <kbd>⌘P</kbd>, run commands with <kbd>⌘⇧P</kbd>, and use the <em>Workspace</em> grid to watch several terminals at once.</li>
+          <li><b>Ship it.</b> The Git panel shows changes &amp; diffs — click the branch (bottom-left) to switch, then <em>commit &amp; push</em> (or ask the agent to).</li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="contribute">
+      <div class="wrap">
+        <h2>Built to grow with you</h2>
+        <p class="sub">This project exists to be built <em>with</em> people.</p>
+        <p>
+          Adding your own agent is a one-file change (<code>ide/src/lib/clis.ts</code>).
+          Detection heuristics, the roadmap items, and docs are all open. See
+          <a id="contributing" href="#">CONTRIBUTING</a> and the
+          <a id="issues" href="#">issues</a> — every bug report and idea helps.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap">
+        EvorIde · MIT licensed · <a id="repo2" href="#">GitHub</a><br />
+        <span style="color:var(--fg-subtle)">Built for the era where you don’t write all the code — you direct the agents that do.</span>
+      </div>
+    </footer>
+
+    <script>
+      // Wire repo-relative links from window.REPO.
+      const R = window.REPO;
+      const set = (id, href) => { const el = document.getElementById(id); if (el) el.href = href; };
+      set("repo", R);
+      set("repo2", R);
+      set("download", R + "/releases");
+      set("releases", R + "/releases");
+      set("issues", R + "/issues");
+      set("contributing", R + "/blob/main/CONTRIBUTING.md");
+      // Fill the $REPO placeholder in the code block.
+      document.querySelectorAll("pre").forEach((p) => {
+        p.textContent = p.textContent.replace("$REPO", R + ".git");
+      });
+    </script>
+  </body>
+</html>

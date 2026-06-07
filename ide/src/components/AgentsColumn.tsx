@@ -16,6 +16,8 @@ export default function AgentsColumn({
   agents,
   archived,
   live,
+  waiting,
+  states,
   activeAgentId,
   git,
   sessions,
@@ -32,6 +34,10 @@ export default function AgentsColumn({
   agents: AgentRecord[];
   archived: AgentRecord[];
   live: Set<string>;
+  /** Agent ids currently blocking on user input. */
+  waiting: Set<string>;
+  /** Helper-judge classification per agent (working/passive/active). */
+  states: Record<string, "working" | "passive" | "active">;
   activeAgentId: string | null;
   git: GitStatus | null;
   /** Past Claude sessions NOT already running in this window. */
@@ -64,16 +70,9 @@ export default function AgentsColumn({
     <div className="agents">
       <div className="agents-head">
         <span>Agents</span>
-        {git?.is_repo && (
-          <span className="git" title={`${git.branch} · ${git.dirty} changed`}>
-            <span className="git-branch">⎇ {git.branch}</span>
-            {git.dirty > 0 ? (
-              <span className="git-dirty">●{git.dirty}</span>
-            ) : (
-              <span className="git-clean">✓</span>
-            )}
-            {git.ahead > 0 && <span className="git-ab">↑{git.ahead}</span>}
-            {git.behind > 0 && <span className="git-ab">↓{git.behind}</span>}
+        {git?.is_repo && git.dirty > 0 && (
+          <span className="agents-dirty" title={`${git.dirty} changed`}>
+            ●{git.dirty}
           </span>
         )}
       </div>
@@ -81,15 +80,36 @@ export default function AgentsColumn({
       <ul className="agents-list">
         {agents.map((a) => {
           const isLive = live.has(a.id);
+          const isWaiting = waiting.has(a.id);
+          const isPassive = !isWaiting && isLive && states[a.id] === "passive";
           return (
             <li key={a.id}>
               <div
-                className={`agent-item ${a.id === activeAgentId ? "active" : ""}`}
+                className={`agent-item ${a.id === activeAgentId ? "active" : ""} ${
+                  isWaiting ? "waiting" : ""
+                }`}
                 onClick={() => onSelect(a.id)}
               >
-                <span className={`dot ${isLive ? "dot-live" : "dot-dead"}`} />
+                <span
+                  className={`dot ${
+                    isWaiting ? "dot-wait" : isLive ? "dot-live" : "dot-dead"
+                  }`}
+                  title={isWaiting ? "Waiting for your input" : undefined}
+                />
                 <div className="agent-meta">
-                  <div className="agent-title">{a.title}</div>
+                  <div className="agent-title">
+                    {a.title}
+                    {isWaiting && (
+                      <span className="agent-wait-pill" title="Actively waiting — needs your input">
+                        needs you
+                      </span>
+                    )}
+                    {isPassive && (
+                      <span className="agent-idle-pill" title="Idle at its prompt — nothing required">
+                        idle
+                      </span>
+                    )}
+                  </div>
                   <div className="agent-sub">
                     <span className="agent-cmd">{a.command}</span>
                     {editCounts[a.id] > 0 && (

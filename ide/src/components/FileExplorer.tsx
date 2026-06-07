@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { readDir, type FileEntry } from "../lib/tauri";
+import { useEffect, useState, type FormEvent } from "react";
+import { createFile, readDir, type FileEntry } from "../lib/tauri";
 
 // A lazily-expanding directory node (VS Code-style explorer).
 function TreeNode({
@@ -69,14 +69,57 @@ export default function FileExplorer({
   activePath: string | null;
 }) {
   const [tree, setTree] = useState<FileEntry[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
+  const refresh = () => readDir(root).then(setTree).catch(() => setTree([]));
   useEffect(() => {
-    readDir(root).then(setTree).catch(() => setTree([]));
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
+
+  const submitNew = async (e: FormEvent) => {
+    e.preventDefault();
+    const rel = name.trim().replace(/^\/+/, "");
+    if (!rel) return;
+    setError(null);
+    try {
+      const path = `${root.replace(/\/$/, "")}/${rel}`;
+      await createFile(path);
+      setName("");
+      setAdding(false);
+      refresh();
+      onOpenFile({ name: rel.split("/").pop() ?? rel, path, is_dir: false });
+    } catch (err) {
+      setError(String(err));
+    }
+  };
 
   return (
     <div className="explorer">
-      <div className="explorer-head">Explorer</div>
+      <div className="explorer-head">
+        <span>Explorer</span>
+        <button
+          className="explorer-new"
+          title="New file"
+          onClick={() => setAdding((a) => !a)}
+        >
+          ＋
+        </button>
+      </div>
+      {adding && (
+        <form className="explorer-add" onSubmit={submitNew}>
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="path/to/new-file.ts"
+            onKeyDown={(e) => e.key === "Escape" && setAdding(false)}
+          />
+          {error && <div className="explorer-err">{error}</div>}
+        </form>
+      )}
       <div className="explorer-tree">
         {tree.map((e) => (
           <TreeNode

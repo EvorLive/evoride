@@ -35,7 +35,7 @@ export default function DiffView({
         {loading ? (
           <div className="diff-empty">loading…</div>
         ) : !text ? (
-          <div className="diff-empty">No tracked changes.</div>
+          <div className="diff-empty">No changes to show for this file.</div>
         ) : (
           <pre className="diff">
             {text.split("\n").map((line, i) => {

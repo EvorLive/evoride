@@ -50,6 +50,8 @@ struct ExitEvent {
 struct WaitingEvent {
     id: String,
     waiting: bool,
+    /// Labels of a numbered select menu (1-based); empty for y/n or free-text.
+    options: Vec<String>,
 }
 
 struct Session {
@@ -124,21 +126,27 @@ impl SessionManager {
             // Rolling tail (shared eterm-core) for issue detection on exit.
             let mut tail = eterm_core::OutputTail::new(8192);
             let mut waiting = false;
+            let mut options: Vec<String> = Vec::new();
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         tail.push(&buf[..n]);
-                        // Detect blocking-on-input transitions for the project rail.
-                        let now_waiting = eterm_core::has_input_prompt(tail.text());
-                        if now_waiting != waiting {
+                        // Detect blocking-on-input transitions (+ parsed menu
+                        // choices) for the rail, agent list, and home summary.
+                        let info = eterm_core::detect_prompt(tail.text());
+                        let now_waiting = info.is_some();
+                        let now_options = info.map(|i| i.options).unwrap_or_default();
+                        if now_waiting != waiting || now_options != options {
                             waiting = now_waiting;
+                            options = now_options.clone();
                             let _ = ev_app.emit(
                                 "agent-waiting",
                                 WaitingEvent {
                                     id: ev_id.clone(),
                                     waiting,
+                                    options: now_options,
                                 },
                             );
                         }
@@ -167,6 +175,7 @@ impl SessionManager {
                 WaitingEvent {
                     id: ev_id.clone(),
                     waiting: false,
+                    options: Vec::new(),
                 },
             );
             let _ = ev_app.emit(

@@ -7,6 +7,8 @@
 Run, watch, and steer Claude Code, Codex, or any CLI agent across all your projects —
 from one window. Keep the **why** of your code next to the **what**.
 
+**[⬇ Download](../../releases)** · **[📖 Docs & getting started](https://evorlive.github.io/evoride/)** · macOS · Windows · Linux
+
 > ⚠️ **Early / alpha.** Actively built in the open. Things move fast and break.
 > Issues, ideas, and PRs are very welcome — this is meant to grow with its community.
 
@@ -158,10 +160,21 @@ data-driven/user-configurable. See the [roadmap](#roadmap).
 
 ## Roadmap
 
-Built ✅ · Planned ⬜ — **contributions especially welcome on the planned items.**
+Built ✅ · Coming up 🚧 · Planned ⬜ — **contributions especially welcome on the planned items.**
 
 - ✅ Multi-project, multi-agent, run/stop, git, intent docs, fix-this-issue, edit tracking,
-  themes, terminal discarding, waiting-for-input detection
+  themes, terminal discarding, waiting-for-input detection, command palette (⌘P / ⌘⇧P)
+- 🚧 **Persistent agents** — agents survive the IDE crashing *or* closing and re-attach on
+  reopen (tmux/screen-backed), so long runs aren't lost. *(coming up)*
+- 🚧 **Remote control for the IDE** — drive your running IDE and its agents from the web
+  dashboard / phone: see what's waiting, reply, start/stop agents from anywhere. *(coming up)*
+- 🚧 **eterm as a first-class GUI terminal** — graduate the smart terminal from a TUI to a
+  standalone desktop app in its own window (Tauri + xterm.js/WebGL, reusing the IDE's
+  terminal stack), with mouse text **selection & highlight**, **search**, copy/paste,
+  clickable URLs, themes, and GPU-fast rendering — the niceties of a best-in-class macOS
+  terminal, plus eterm-core's built-in agent/error/prompt smarts. *(coming up)*
+- ⬜ **Per-project permission profiles** — "ask / guarded allow-all / YOLO" per project with
+  a deny-list for destructive ops, and a default agent (claude/codex) per project
 - ⬜ **Embedding / semantic code search** as a plugin (e.g. local Ollama + Milvus via an MCP
   host) to cut token usage
 - ⬜ **MCP plugin host** — manage any MCP server for your agents from the IDE

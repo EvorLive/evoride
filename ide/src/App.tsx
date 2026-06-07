@@ -1,21 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ProjectRail from "./components/ProjectRail";
 import AgentsColumn from "./components/AgentsColumn";
-import TasksPanel from "./components/TasksPanel";
-import AgentTerminal from "./components/AgentTerminal";
 import SessionLauncher from "./components/SessionLauncher";
-import FileExplorer from "./components/FileExplorer";
-import Editor from "./components/Editor";
-import GitPanel from "./components/GitPanel";
-import DiffView from "./components/DiffView";
 import RunControl from "./components/RunControl";
-import IntentPanel from "./components/IntentPanel";
-import EditsPanel from "./components/EditsPanel";
 import StatusBar from "./components/StatusBar";
 import HomeView from "./components/HomeView";
+import HomeBar from "./components/HomeBar";
+import CommandPalette, { type Command } from "./components/CommandPalette";
+// Heavy / on-demand components are code-split (xterm, editor, diff, panels).
+const GridWorkspace = lazy(() => import("./components/GridWorkspace"));
+const AgentTerminal = lazy(() => import("./components/AgentTerminal"));
+const Editor = lazy(() => import("./components/Editor"));
+const DiffView = lazy(() => import("./components/DiffView"));
+const FileExplorer = lazy(() => import("./components/FileExplorer"));
+const GitPanel = lazy(() => import("./components/GitPanel"));
+const IntentPanel = lazy(() => import("./components/IntentPanel"));
+const TasksPanel = lazy(() => import("./components/TasksPanel"));
+const EditsPanel = lazy(() => import("./components/EditsPanel"));
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { midTruncate } from "./lib/util";
 import * as api from "./lib/tauri";
 import type {
   AgentRecord,
@@ -42,7 +47,7 @@ const NEXT_STATUS = { todo: "doing", doing: "done", done: "todo" } as const;
 export default function App() {
   // Top-level view: the cross-project Home dashboard, or the single-project
   // workspace. Defaults to Home on launch when projects exist.
-  const [view, setView] = useState<"home" | "workspace">("home");
+  const [view, setView] = useState<"home" | "workspace" | "grid">("home");
   // The IDE is scoped to a single project.
   const [project, setProject] = useState<Project | null>(null);
   const [agents, setAgents] = useState<AgentRecord[]>([]);
@@ -77,6 +82,24 @@ export default function App() {
   // Multi-project rail: running agents across projects + who's waiting for input.
   const [runningList, setRunningList] = useState<AgentRecord[]>([]);
   const [waitingAgents, setWaitingAgents] = useState<Set<string>>(new Set());
+  // Parsed numbered-menu choices per waiting agent (id → option labels).
+  const [waitingOptions, setWaitingOptions] = useState<Record<string, string[]>>({});
+  // Hidden helper-judge: per-agent classified state + plumbing to run it on idle.
+  const [agentState, setAgentState] = useState<Record<string, "working" | "passive" | "active">>({});
+  const [hasJudge, setHasJudge] = useState(false);
+  const lastOutputRef = useRef<Record<string, number>>({});
+  const judgedRef = useRef<Record<string, number>>({});
+  const inFlightRef = useRef<Set<string>>(new Set());
+  // Multi-terminal "Workspace" grid: agent ids pinned as visible tiles. Persisted
+  // to localStorage and reconciled against actually-running agents on load.
+  const [gridAgents, setGridAgents] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("evoride-grid");
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
   // Theme: follow system, or manual light/dark.
   const [theme, setTheme] = useState<"system" | "light" | "dark">(
     () => (localStorage.getItem("evoride-theme") as never) || "system",
@@ -85,6 +108,22 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("evoride-theme", theme);
   }, [theme]);
+  const cycleTheme = () =>
+    setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system"));
+  const openPalette = (mode: "files" | "commands" = "commands") => {
+    setPaletteMode(mode);
+    setPaletteOpen(true);
+  };
+  // Command palette (⌘P files / ⌘⇧P commands).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteMode, setPaletteMode] = useState<"files" | "commands">("files");
+  const [paletteFiles, setPaletteFiles] = useState<string[]>([]);
+  // Which overlay the Workspace grid shows ("pull" / "new"), controlled here so
+  // the command palette can open them too.
+  const [gridMenu, setGridMenu] = useState<"pull" | "new" | null>(null);
+  // All agents across projects (for the grid's "resume inactive" section).
+  const [allAgentList, setAllAgentList] = useState<AgentRecord[]>([]);
+
   // Open file tabs for the right-side editor.
   const [openFiles, setOpenFiles] = useState<FileEntry[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
@@ -155,6 +194,42 @@ export default function App() {
     return () => window.removeEventListener("contextmenu", block);
   }, []);
 
+  // Global command-palette shortcuts. ⌘⇧P always opens commands. Plain ⌘P is
+  // page-aware: file search only makes sense inside a project's workspace, so
+  // elsewhere (Home / grid) it opens the (context-appropriate) command list.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || e.key.toLowerCase() !== "p") return;
+      e.preventDefault();
+      const fileable = view === "workspace" && !!project;
+      setPaletteMode(e.shiftKey || !fileable ? "commands" : "files");
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view, project]);
+
+  // Re-fetch the project's file list whenever the palette opens in file mode.
+  useEffect(() => {
+    if (paletteOpen && paletteMode === "files" && project) {
+      api.listFiles(project.path).then(setPaletteFiles).catch(() => setPaletteFiles([]));
+    }
+  }, [paletteOpen, paletteMode, project]);
+
+  // Poll all agents (running + stopped) for the grid's "resume inactive" list.
+  useEffect(() => {
+    let alive = true;
+    const poll = () =>
+      api.allAgents().then((a) => alive && setAllAgentList(a)).catch(() => {});
+    poll();
+    const t = setInterval(() => !document.hidden && poll(), 4000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [agents]);
+
   // Poll git for the project.
   useEffect(() => {
     if (!project) {
@@ -165,7 +240,7 @@ export default function App() {
     const poll = () =>
       api.gitStatus(project.path).then((g) => alive && setGit(g)).catch(() => {});
     poll();
-    const t = setInterval(poll, 4000);
+    const t = setInterval(() => !document.hidden && poll(), 4000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -188,6 +263,54 @@ export default function App() {
       n.delete(id);
       return n;
     });
+
+  // On mount, drop any persisted grid tiles whose agent isn't actually running
+  // (avoids dead tiles that can't restore after a restart), and mark the rest live.
+  useEffect(() => {
+    api
+      .runningAgents()
+      .then((rs) => {
+        const alive = new Set(rs.map((a) => a.id));
+        setGridAgents((prev) => prev.filter((id) => alive.has(id)));
+        setLive((p) => {
+          const n = new Set(p);
+          for (const id of gridAgents) if (alive.has(id)) n.add(id);
+          return n;
+        });
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist grid tiles whenever they change.
+  useEffect(() => {
+    localStorage.setItem("evoride-grid", JSON.stringify(gridAgents));
+  }, [gridAgents]);
+
+  // Pull an already-running agent into the grid (no spawn).
+  const addRunningToGrid = (id: string) => {
+    addLive(id);
+    setGridAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  };
+  // Spawn a fresh agent straight into the grid (don't touch project/view/active).
+  const spawnToGrid = async (projectId: string, command: string, title: string) => {
+    const rec = await api.spawnAgent({
+      projectId,
+      title: title || "agent",
+      command: command || undefined,
+    });
+    addLive(rec.id);
+    setGridAgents((prev) => [...prev, rec.id]);
+  };
+  // Resume a stopped agent and pin it into the grid (don't touch view/project).
+  const onResumeToGrid = async (id: string) => {
+    await api.resumeAgent(id).catch(() => {});
+    addLive(id);
+    setGridAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  };
+  // Un-pin a tile (the agent keeps running).
+  const removeTile = (id: string) =>
+    setGridAgents((prev) => prev.filter((x) => x !== id));
 
   const openFolder = async () => {
     setMenuOpen(false);
@@ -213,10 +336,31 @@ export default function App() {
     addLive(agent.id);
     setView("workspace");
   };
+  // Optimistically clear the "needs you" flag the instant the user replies;
+  // the backend re-flags only if a new prompt appears after the agent responds.
+  const clearWaiting = (id: string) => {
+    setWaitingAgents((prev) => {
+      if (!prev.has(id)) return prev;
+      const n = new Set(prev);
+      n.delete(id);
+      return n;
+    });
+    setWaitingOptions((prev) => {
+      if (!(id in prev)) return prev;
+      const { [id]: _drop, ...rest } = prev;
+      return rest;
+    });
+  };
   // Respond to a waiting agent without entering its project.
-  const acceptAgent = (id: string) => void api.writeInput(id, "\r");
-  const yesAgent = (id: string) => void api.writeInput(id, "y\r");
-  const noAgent = (id: string) => void api.writeInput(id, "n\r");
+  const reply = (id: string, data: string) => {
+    void api.writeInput(id, data);
+    clearWaiting(id);
+  };
+  const acceptAgent = (id: string) => reply(id, "\r");
+  const yesAgent = (id: string) => reply(id, "y\r");
+  const noAgent = (id: string) => reply(id, "n\r");
+  // Pick option N of a numbered select menu (send the digit + Enter).
+  const pickOption = (id: string, n: number) => reply(id, `${n}\r`);
 
   // Native window menu → app actions.
   useEffect(() => {
@@ -260,7 +404,7 @@ export default function App() {
     const poll = () =>
       api.claudeUsage(project.path).then((u) => alive && setUsage(u)).catch(() => {});
     poll();
-    const t = setInterval(poll, 4000);
+    const t = setInterval(() => !document.hidden && poll(), 4000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -454,7 +598,7 @@ export default function App() {
     const poll = () =>
       api.agentEditCounts(project.path).then((c) => alive && setEditCounts(c)).catch(() => {});
     poll();
-    const t = setInterval(poll, 4000);
+    const t = setInterval(() => !document.hidden && poll(), 4000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -467,7 +611,7 @@ export default function App() {
     const poll = () =>
       api.runningAgents().then((r) => alive && setRunningList(r)).catch(() => {});
     poll();
-    const t = setInterval(poll, 3000);
+    const t = setInterval(() => !document.hidden && poll(), 3000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -478,19 +622,100 @@ export default function App() {
   useEffect(() => {
     let un: (() => void) | undefined;
     api
-      .onAgentWaiting((id, waiting) =>
+      .onAgentWaiting((id, waiting, options) => {
         setWaitingAgents((prev) => {
           const n = new Set(prev);
           if (waiting) n.add(id);
           else n.delete(id);
           return n;
-        }),
-      )
+        });
+        setWaitingOptions((prev) => {
+          if (!waiting) {
+            if (!(id in prev)) return prev;
+            const { [id]: _drop, ...rest } = prev;
+            return rest;
+          }
+          return { ...prev, [id]: options };
+        });
+      })
       .then((u) => {
         un = u;
       });
     return () => un?.();
   }, []);
+
+  // --- Hidden helper-judge: classify idle agents as working / passively-idle /
+  // actively-needing-you, far more reliably than the regex. Is a helper present?
+  useEffect(() => {
+    api.judgeHelper().then((h) => setHasJudge(!!h)).catch(() => {});
+  }, []);
+
+  // Track per-agent idleness from raw output (timestamp only, no re-render).
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    api
+      .onAnyOutput((id) => {
+        lastOutputRef.current[id] = Date.now();
+      })
+      .then((u) => {
+        un = u;
+      });
+    return () => un?.();
+  }, []);
+
+  // Once an agent has been idle a few seconds, ask the judge to classify it and
+  // reconcile the "needs you" flag — adding misses, clearing false positives.
+  useEffect(() => {
+    if (!hasJudge) return;
+    const IDLE_MS = 5000;
+    const tick = () => {
+      if (document.hidden) return;
+      const now = Date.now();
+      for (const a of runningList) {
+        const base = a.command.split(/\s+/)[0]?.split("/").pop() ?? "";
+        if (base !== "claude" && base !== "codex") continue;
+        const last = lastOutputRef.current[a.id];
+        if (last === undefined) {
+          // First time we see it — start its idle clock now.
+          lastOutputRef.current[a.id] = now;
+          continue;
+        }
+        if (now - last < IDLE_MS) continue; // still actively producing output
+        if ((judgedRef.current[a.id] ?? 0) >= last) continue; // judged this idle already
+        if (inFlightRef.current.has(a.id) || inFlightRef.current.size >= 2) continue;
+        inFlightRef.current.add(a.id);
+        judgedRef.current[a.id] = last;
+        api
+          .judgeAgent(a.id)
+          .then((j) => {
+            if (!j) return;
+            const state = j.state === "waiting_active" ? "active" : j.state === "waiting_passive" ? "passive" : "working";
+            setAgentState((p) => ({ ...p, [a.id]: state }));
+            const active = j.needs_input || j.state === "waiting_active";
+            setWaitingAgents((p) => {
+              const has = p.has(a.id);
+              if (active === has) return p;
+              const n = new Set(p);
+              if (active) n.add(a.id);
+              else n.delete(a.id);
+              return n;
+            });
+            setWaitingOptions((p) => {
+              if (active && j.options.length) return { ...p, [a.id]: j.options };
+              if (!active && a.id in p) {
+                const { [a.id]: _drop, ...rest } = p;
+                return rest;
+              }
+              return p;
+            });
+          })
+          .catch(() => {})
+          .finally(() => inFlightRef.current.delete(a.id));
+      }
+    };
+    const iv = setInterval(tick, 3000);
+    return () => clearInterval(iv);
+  }, [hasJudge, runningList]);
 
   const addTask = (title: string) => {
     if (!project) return;
@@ -564,6 +789,114 @@ export default function App() {
     return s;
   }, [waitingAgents, agentProject]);
 
+  // id → record / id → project maps for resolving grid tile headers.
+  const agentsById = useMemo(() => {
+    const m: Record<string, AgentRecord> = {};
+    for (const a of runningList) m[a.id] = a;
+    for (const a of agents) m[a.id] = a;
+    return m;
+  }, [runningList, agents]);
+  const projectsById = useMemo(() => {
+    const m: Record<string, Project> = {};
+    for (const p of knownProjects) m[p.id] = p;
+    return m;
+  }, [knownProjects]);
+
+  // Stopped/archived agents not already pinned as grid tiles (for "resume").
+  const inactiveAgents = useMemo(() => {
+    const pinned = new Set(gridAgents);
+    return allAgentList.filter((a) => a.status !== "running" && !pinned.has(a.id));
+  }, [allAgentList, gridAgents]);
+
+  // Open a palette file: resolve relative → absolute, open in the center editor.
+  const openPaletteFile = useCallback(
+    (relPath: string) => {
+      if (!project) return;
+      const abs = `${project.path.replace(/\/$/, "")}/${relPath}`;
+      const base = relPath.split("/").pop() ?? relPath;
+      openFile({ name: base, path: abs, is_dir: false });
+      setView("workspace");
+      setPaletteOpen(false);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [project],
+  );
+
+  // Palette commands — assembled per current page so only relevant actions show.
+  const paletteCommands = useMemo<Command[]>(() => {
+    const cmds: Command[] = [];
+
+    // Navigation (always available, minus the page you're on).
+    if (view !== "home")
+      cmds.push({ id: "home", label: "Go to Home", hint: "View", run: () => setView("home") });
+    if (view !== "grid")
+      cmds.push({ id: "grid", label: "Open Workspace (grid)", hint: "View", run: () => setView("grid") });
+    if (project && view !== "workspace")
+      cmds.push({ id: "back", label: `Back to ${project.name}`, hint: "View", run: () => setView("workspace") });
+
+    // Workspace-grid actions — only meaningful on the grid page.
+    if (view === "grid") {
+      cmds.push({ id: "pull", label: "Pull agent into workspace", hint: "Workspace", run: () => setGridMenu("pull") });
+      cmds.push({ id: "new-grid", label: "New agent in workspace…", hint: "Workspace", run: () => setGridMenu("new") });
+    }
+
+    // File search — gated on having a project; otherwise route you to one first.
+    if (view === "workspace" && project) {
+      cmds.push({ id: "open-file", label: "Open file…", hint: "⌘P", run: () => setPaletteMode("files") });
+    } else if (project) {
+      cmds.push({
+        id: "open-file",
+        label: `Open file in ${project.name}…`,
+        hint: "File",
+        run: () => {
+          setView("workspace");
+          setPaletteMode("files");
+        },
+      });
+    } else {
+      cmds.push({ id: "open-file", label: "Open a project to browse files…", hint: "File", run: () => setView("home") });
+    }
+
+    // Agent launchers — spawn into the active project (workspace only).
+    if (view === "workspace" && project) {
+      cmds.push({ id: "new-claude", label: "New Claude session", hint: "Agent", run: () => newAgent("Claude", "claude") });
+      cmds.push({ id: "new-shell", label: "New shell", hint: "Agent", run: () => newAgent("shell", "") });
+      cmds.push({ id: "new-codex", label: "New Codex", hint: "Agent", run: () => newAgent("Codex", "codex") });
+    }
+
+    // Project + window (always).
+    cmds.push({ id: "open-project", label: "Open project…", hint: "Project", run: () => void openFolder() });
+    cmds.push({ id: "new-window", label: "New window", hint: "Window", run: () => api.openWindow() });
+
+    // Right-side panels — only exist on the project workspace page.
+    if (view === "workspace" && project) {
+      cmds.push({ id: "panel-git", label: "Toggle Git panel", hint: "Panel", run: () => setRightPanel((p) => (p === "git" ? null : "git")) });
+      cmds.push({ id: "panel-files", label: "Toggle Files panel", hint: "Panel", run: () => setRightPanel((p) => (p === "files" ? null : "files")) });
+      cmds.push({ id: "panel-plan", label: "Toggle Plan panel", hint: "Panel", run: () => setRightPanel((p) => (p === "plan" ? null : "plan")) });
+      cmds.push({ id: "panel-intent", label: "Toggle Intent panel", hint: "Panel", run: () => setRightPanel((p) => (p === "intent" ? null : "intent")) });
+      cmds.push({ id: "panel-edits", label: "Toggle Edits panel", hint: "Panel", run: () => setRightPanel((p) => (p === "edits" ? null : "edits")) });
+    }
+
+    // Appearance (always).
+    cmds.push({ id: "toggle-theme", label: "Toggle theme", hint: "Appearance", run: cycleTheme });
+
+    return cmds;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, project]);
+
+  // Rendered once, overlaying whichever view is active.
+  const palette = (
+    <CommandPalette
+      open={paletteOpen}
+      mode={paletteMode}
+      files={paletteFiles}
+      commands={paletteCommands}
+      projectPath={project?.path ?? null}
+      onOpenFile={openPaletteFile}
+      onClose={() => setPaletteOpen(false)}
+    />
+  );
+
   // No projects at all → the original welcome screen.
   if (knownProjects.length === 0) {
     return (
@@ -575,6 +908,7 @@ export default function App() {
             Open folder
           </button>
         </div>
+        {palette}
       </div>
     );
   }
@@ -586,17 +920,20 @@ export default function App() {
         <div className="ide-main">
           <ProjectRail
             projects={knownProjects}
-            activeId={project?.id ?? null}
+            activeId={null}
+            homeActive
             runningByProject={runningByProject}
             waitingProjects={waitingProjects}
             onSelect={openProjectFromHome}
             onOpen={openFolder}
             onHome={() => setView("home")}
+            onWorkspace={() => setView("grid")}
           />
           <HomeView
             projects={knownProjects}
             runningList={runningList}
             waitingAgents={waitingAgents}
+            waitingOptions={waitingOptions}
             runningByProject={runningByProject}
             waitingProjects={waitingProjects}
             onOpenProject={openProjectFromHome}
@@ -604,8 +941,67 @@ export default function App() {
             onAccept={acceptAgent}
             onYes={yesAgent}
             onNo={noAgent}
+            onPick={pickOption}
           />
         </div>
+        <HomeBar
+          projectCount={knownProjects.length}
+          runningCount={runningList.length}
+          waitingCount={waitingAgents.size}
+          onOpenPalette={() => openPalette("commands")}
+          theme={theme}
+          onCycleTheme={cycleTheme}
+        />
+        {palette}
+      </div>
+    );
+  }
+
+  // Multi-terminal Workspace grid (cross-project; not tied to `project`).
+  if (view === "grid") {
+    return (
+      <div className="ide">
+        <div className="ide-main">
+          <ProjectRail
+            projects={knownProjects}
+            activeId={null}
+            workspaceActive
+            runningByProject={runningByProject}
+            waitingProjects={waitingProjects}
+            onSelect={(p) => {
+              setProject(p);
+              setView("workspace");
+            }}
+            onOpen={openFolder}
+            onHome={() => setView("home")}
+            onWorkspace={() => setView("grid")}
+          />
+          <Suspense fallback={<div className="grid-view" />}>
+            <GridWorkspace
+              tileIds={gridAgents}
+              agentsById={agentsById}
+              projectsById={projectsById}
+              runningList={runningList}
+              inactiveAgents={inactiveAgents}
+              projects={knownProjects}
+              menu={gridMenu}
+              onMenu={setGridMenu}
+              onAddRunning={addRunningToGrid}
+              onResumeToGrid={(id) => void onResumeToGrid(id)}
+              onSpawn={(pid, command, title) => void spawnToGrid(pid, command, title)}
+              onRemoveTile={removeTile}
+            />
+          </Suspense>
+        </div>
+        <HomeBar
+          projectCount={knownProjects.length}
+          runningCount={runningList.length}
+          waitingCount={waitingAgents.size}
+          onOpenPalette={() => openPalette("commands")}
+          theme={theme}
+          onCycleTheme={cycleTheme}
+        />
+        {palette}
       </div>
     );
   }
@@ -621,6 +1017,7 @@ export default function App() {
             Go to Home
           </button>
         </div>
+        {palette}
       </div>
     );
   }
@@ -639,11 +1036,14 @@ export default function App() {
           }}
           onOpen={openFolder}
           onHome={() => setView("home")}
+          onWorkspace={() => setView("grid")}
         />
         <AgentsColumn
           agents={activeAgents}
           archived={archivedAgents}
           live={live}
+          waiting={waitingAgents}
+          states={agentState}
           activeAgentId={activeAgentId}
           git={git}
           sessions={continuableSessions}
@@ -726,14 +1126,8 @@ export default function App() {
               </span>
             )}
             <span className="tb-path" title={project.path}>
-              {project.path}
+              {midTruncate(project.path, 52)}
             </span>
-            {git?.is_repo && (
-              <span className="tb-branch">
-                ⎇ {git.branch}
-                {git.dirty > 0 && <span className="tb-dirty"> ●{git.dirty}</span>}
-              </span>
-            )}
 
             <div className="tb-actions">
               <RunControl
@@ -744,11 +1138,12 @@ export default function App() {
                 onCreateConfig={refreshRunConfig}
               />
               <button
-                className="btn-sm"
+                className="btn-sm icon"
                 onClick={() => newAgent("Claude", "claude")}
                 title="New Claude session"
+                aria-label="New Claude session"
               >
-                ＋ Claude
+                ✦
               </button>
               {openFiles.length > 0 && (
                 <>
@@ -757,42 +1152,54 @@ export default function App() {
                     <button
                       className={centerMode === "terminal" ? "on" : ""}
                       onClick={() => setCenterMode("terminal")}
+                      title="Show terminal"
+                      aria-label="Show terminal"
                     >
-                      Terminal
+                      &gt;_
                     </button>
                     <button
                       className={centerMode === "editor" ? "on" : ""}
                       onClick={() => setCenterMode("editor")}
+                      title={`Show files (${openFiles.length} open)`}
+                      aria-label="Show files"
                     >
-                      Files ({openFiles.length})
+                      📄 {openFiles.length}
                     </button>
                   </div>
                 </>
               )}
               <span className="tb-sep" />
-              {(["files", "git", "plan", "intent", "edits"] as const).map((p) => (
+              {(
+                [
+                  { id: "files", icon: "📁", label: "Files" },
+                  { id: "git", icon: "⎇", label: "Git changes" },
+                  { id: "plan", icon: "☑", label: "Plan / tasks" },
+                  { id: "intent", icon: "🎯", label: "Intent" },
+                  { id: "edits", icon: "✎", label: "Agent edits" },
+                ] as const
+              ).map((p) => (
                 <button
-                  key={p}
-                  className={`toggle ${rightPanel === p ? "on" : ""}`}
-                  onClick={() => setRightPanel((cur) => (cur === p ? null : p))}
+                  key={p.id}
+                  className={`toggle icon ${rightPanel === p.id ? "on" : ""}`}
+                  onClick={() => setRightPanel((cur) => (cur === p.id ? null : p.id))}
+                  title={p.label}
+                  aria-label={p.label}
                 >
-                  {p === "files"
-                    ? "Files"
-                    : p === "git"
-                      ? "Git"
-                      : p === "plan"
-                        ? "Plan"
-                        : p === "intent"
-                          ? "Intent"
-                          : "Edits"}
+                  {p.icon}
                 </button>
               ))}
-              <button className="toggle" onClick={() => api.openWindow()} title="New window">
+              <button
+                className="toggle icon"
+                onClick={() => api.openWindow()}
+                title="New window"
+                aria-label="New window"
+              >
                 ⧉
               </button>
             </div>
           </div>
 
+          <Suspense fallback={<div className="main-body" />}>
           <div className="main-body">
             <div className="term-area">
               {/* Center shows ONE of: diff, file editor, or the agent terminal. */}
@@ -897,11 +1304,13 @@ export default function App() {
               />
             )}
           </div>
+          </Suspense>
         </main>
       </div>
 
       <StatusBar
         git={git}
+        projectName={project?.name ?? null}
         activeAgent={activeRec}
         live={activeIsLive}
         model={activeModel}
@@ -912,7 +1321,10 @@ export default function App() {
         onCycleTheme={() =>
           setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system"))
         }
+        cwd={project?.path ?? null}
+        onGitRefresh={refreshGitStatus}
       />
+      {palette}
     </div>
   );
 }

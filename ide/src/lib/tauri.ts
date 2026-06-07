@@ -80,13 +80,16 @@ export async function pickFolder(): Promise<string | null> {
 export const listAgents = (projectId: string) =>
   invoke<AgentRecord[]>("list_agents", { projectId });
 export const runningAgents = () => invoke<AgentRecord[]>("running_agents");
+export const allAgents = () => invoke<AgentRecord[]>("all_agents");
 
 /// Global listener: an agent started/stopped waiting for user input.
+/// `options` holds the labels of a numbered select menu (empty for y/n / free text).
 export async function onAgentWaiting(
-  cb: (id: string, waiting: boolean) => void,
+  cb: (id: string, waiting: boolean, options: string[]) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ id: string; waiting: boolean }>("agent-waiting", (ev) =>
-    cb(ev.payload.id, ev.payload.waiting),
+  return listen<{ id: string; waiting: boolean; options?: string[] }>(
+    "agent-waiting",
+    (ev) => cb(ev.payload.id, ev.payload.waiting, ev.payload.options ?? []),
   );
 }
 
@@ -124,6 +127,11 @@ export const deleteTask = (id: string) => invoke("delete_task", { id });
 // --- files ---
 export const readDir = (path: string) => invoke<FileEntry[]>("read_dir", { path });
 export const readFile = (path: string) => invoke<FileContent>("read_file", { path });
+export const writeFile = (path: string, content: string) =>
+  invoke("write_file", { path, content });
+export const createFile = (path: string) => invoke("create_file", { path });
+/** Recursive repo-relative file list for the command palette. */
+export const listFiles = (path: string) => invoke<string[]>("list_files", { path });
 
 // --- claude sessions ---
 export const claudeSessions = (cwd: string) =>
@@ -148,6 +156,15 @@ export const gitCommitPush = (cwd: string, message: string) =>
 export const gitFetch = (cwd: string) => invoke("git_fetch", { cwd });
 export const gitPull = (cwd: string) => invoke<string>("git_pull", { cwd });
 export const gitPush = (cwd: string) => invoke<string>("git_push", { cwd });
+export interface Branches {
+  current: string;
+  all: string[];
+}
+export const gitBranches = (cwd: string) => invoke<Branches>("git_branches", { cwd });
+export const gitCheckout = (cwd: string, branch: string) =>
+  invoke<string>("git_checkout", { cwd, branch });
+export const gitCreateBranch = (cwd: string, name: string) =>
+  invoke<string>("git_create_branch", { cwd, name });
 
 // --- run config ---
 export interface Service {
@@ -192,6 +209,8 @@ export const setDailySummary = (enabled: boolean) =>
   invoke<Settings>("set_daily_summary", { enabled });
 export const dailySummary = (date?: string) =>
   invoke<string>("daily_summary", { date });
+export const dailySummaryAi = (date?: string) =>
+  invoke<string>("daily_summary_ai", { date });
 export const summaryDates = () => invoke<string[]>("summary_dates");
 
 // --- misc ---
@@ -214,6 +233,24 @@ export async function onAgentOutput(
     cb(b64ToBytes(ev.payload.data));
   });
 }
+
+/// Lightweight global listener: fires with the agent id whenever it produces
+/// output (data ignored). Used to track per-agent idleness for the judge.
+export async function onAnyOutput(cb: (id: string) => void): Promise<UnlistenFn> {
+  return listen<OutputEvent>("pty-output", (ev) => cb(ev.payload.id));
+}
+
+/// The hidden helper's verdict for an idle agent (see Rust `judge.rs`).
+export interface Judgement {
+  state: "working" | "waiting_passive" | "waiting_active";
+  needs_input: boolean;
+  summary: string;
+  options: string[];
+  helper: string;
+}
+
+export const judgeAgent = (id: string) => invoke<Judgement | null>("judge_agent", { id });
+export const judgeHelper = () => invoke<string | null>("judge_helper");
 
 export interface ExitInfo {
   hasError: boolean;

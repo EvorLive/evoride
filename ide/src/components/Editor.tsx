@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
-import { readFile, type FileContent, type FileEntry } from "../lib/tauri";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { readFile, writeFile, type FileContent, type FileEntry } from "../lib/tauri";
 import Markdown from "./Markdown";
 
 const isMd = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
 
-// Right-side tabbed editor (read-only), VS Code-like: file tabs + line numbers.
+// Right-center tabbed editor: edit + save files, with a Markdown preview toggle.
 export default function Editor({
   files,
   activePath,
@@ -16,57 +16,97 @@ export default function Editor({
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
 }) {
-  const [cache, setCache] = useState<Record<string, FileContent>>({});
-  // Markdown files preview by default; toggle to see source.
+  const [meta, setMeta] = useState<Record<string, FileContent>>({});
+  const [saved, setSaved] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState<Record<string, string>>({});
   const [rawMd, setRawMd] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (activePath && !cache[activePath]) {
+    if (activePath && meta[activePath] === undefined) {
       readFile(activePath)
-        .then((c) => setCache((p) => ({ ...p, [activePath]: c })))
+        .then((c) => {
+          setMeta((p) => ({ ...p, [activePath]: c }));
+          if (!c.binary) {
+            setSaved((p) => ({ ...p, [activePath]: c.content }));
+            setDraft((p) => ({ ...p, [activePath]: c.content }));
+          }
+        })
         .catch(() =>
-          setCache((p) => ({
+          setMeta((p) => ({
             ...p,
             [activePath]: { content: "", truncated: false, binary: true },
           })),
         );
     }
-  }, [activePath, cache]);
+  }, [activePath, meta]);
 
-  const content = activePath ? cache[activePath] : null;
-  const lineCount =
-    content && !content.binary ? content.content.split("\n").length : 0;
+  const m = activePath ? meta[activePath] : null;
   const markdown = !!activePath && isMd(activePath);
+  const editable = !!m && !m.binary && !m.truncated;
+  const dirty = !!activePath && editable && draft[activePath] !== saved[activePath];
+  const showPreview = markdown && !rawMd;
+
+  const save = async () => {
+    if (!activePath || !editable || !dirty) return;
+    setBusy(true);
+    try {
+      await writeFile(activePath, draft[activePath] ?? "");
+      setSaved((p) => ({ ...p, [activePath]: draft[activePath] ?? "" }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      void save();
+    }
+  };
 
   return (
     <div className="editor">
       <div className="editor-tabs">
-        {files.map((f) => (
-          <div
-            key={f.path}
-            className={`etab ${f.path === activePath ? "active" : ""}`}
-            onClick={() => onActivate(f.path)}
-            title={f.path}
-          >
-            <span className="etab-name">{f.name}</span>
-            <button
-              className="etab-x"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(f.path);
-              }}
+        {files.map((f) => {
+          const fDirty =
+            meta[f.path] && !meta[f.path].binary && draft[f.path] !== saved[f.path];
+          return (
+            <div
+              key={f.path}
+              className={`etab ${f.path === activePath ? "active" : ""}`}
+              onClick={() => onActivate(f.path)}
+              title={f.path}
             >
-              ✕
-            </button>
-          </div>
-        ))}
+              <span className="etab-name">{f.name}</span>
+              {fDirty && <span className="etab-dot" title="unsaved">●</span>}
+              <button
+                className="etab-x"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(f.path);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
+        <div className="etab-spacer" />
         {markdown && (
-          <button
-            className="etab-toggle"
-            onClick={() => setRawMd((r) => !r)}
-            title="Toggle markdown preview / source"
-          >
+          <button className="etab-toggle" onClick={() => setRawMd((r) => !r)}>
             {rawMd ? "Preview" : "Source"}
+          </button>
+        )}
+        {editable && !showPreview && (
+          <button
+            className="etab-save"
+            onClick={save}
+            disabled={!dirty || busy}
+            title="Save (⌘/Ctrl-S)"
+          >
+            {busy ? "Saving…" : dirty ? "● Save" : "Saved"}
           </button>
         )}
       </div>
@@ -74,24 +114,29 @@ export default function Editor({
       <div className="editor-body">
         {!activePath ? (
           <div className="editor-empty">No file open</div>
-        ) : content?.binary ? (
-          <div className="editor-empty">(binary file)</div>
-        ) : markdown && !rawMd ? (
+        ) : m?.binary ? (
+          <div className="editor-empty">(binary file — can’t edit)</div>
+        ) : showPreview ? (
           <div className="md-scroll">
-            <Markdown text={content?.content ?? ""} />
+            <Markdown text={draft[activePath] ?? m?.content ?? ""} />
           </div>
         ) : (
-          <div className="code">
-            <div className="gutter" aria-hidden="true">
-              {Array.from({ length: lineCount }, (_, i) => (
-                <div key={i}>{i + 1}</div>
-              ))}
-            </div>
-            <pre className="code-content">{content?.content ?? "loading…"}</pre>
-          </div>
+          <textarea
+            ref={taRef}
+            className="code-edit"
+            spellCheck={false}
+            readOnly={!editable}
+            value={draft[activePath] ?? m?.content ?? ""}
+            onChange={(e) =>
+              setDraft((p) => ({ ...p, [activePath]: e.target.value }))
+            }
+            onKeyDown={onKey}
+          />
         )}
-        {content?.truncated && (
-          <div className="editor-note">truncated — file larger than 250KB</div>
+        {m?.truncated && (
+          <div className="editor-note">
+            truncated (&gt;250KB) — read-only to avoid data loss
+          </div>
         )}
       </div>
     </div>

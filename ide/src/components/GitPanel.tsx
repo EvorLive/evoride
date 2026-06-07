@@ -96,7 +96,6 @@ export default function GitPanel({
     <aside className="gitpanel">
       <div className="gitpanel-head">
         <span>Changes</span>
-        {git?.is_repo && <span className="gp-branch">⎇ {git.branch}</span>}
         <button className="gp-refresh" title="Refresh" onClick={refresh}>
           ↻
         </button>

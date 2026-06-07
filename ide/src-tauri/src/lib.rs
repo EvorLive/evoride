@@ -7,6 +7,7 @@ mod edits;
 mod fs;
 mod git;
 mod intent;
+mod judge;
 mod run;
 mod session;
 mod settings;
@@ -17,7 +18,7 @@ use claude::{ClaudeSession, ClaudeUsage};
 use edits::EditRecord;
 use intent::IntentConfig;
 use fs::{FileContent, FileEntry};
-use git::{FileChange, GitStatus};
+use git::{Branches, FileChange, GitStatus};
 use run::Service;
 use session::SessionManager;
 use settings::{Settings, SettingsStore};
@@ -102,6 +103,12 @@ fn list_agents(store: State<Store>, project_id: String) -> Vec<AgentRecord> {
 #[tauri::command]
 fn running_agents(store: State<Store>) -> Vec<AgentRecord> {
     store.list_running()
+}
+
+/// Every agent record across all projects (for the palette + grid "resume").
+#[tauri::command]
+fn all_agents(store: State<Store>) -> Vec<AgentRecord> {
+    store.list_all()
 }
 
 #[tauri::command]
@@ -243,6 +250,29 @@ fn agent_scrollback(manager: State<SessionManager>, id: String) -> String {
     base64::engine::general_purpose::STANDARD.encode(manager.scrollback(&id))
 }
 
+/// Ask the hidden helper (claude/codex) to classify an idle agent's state.
+/// Returns `None` when no helper is configured or it failed — the frontend then
+/// keeps its regex-based guess. The helper is one-shot and never tracked.
+#[tauri::command]
+fn judge_agent(manager: State<SessionManager>, id: String) -> Option<judge::Judgement> {
+    let bytes = manager.scrollback(&id);
+    if bytes.is_empty() {
+        return None;
+    }
+    let stripped = eterm_core::strip_ansi(&bytes);
+    let from = stripped.len().saturating_sub(3000);
+    let from = (from..=stripped.len())
+        .find(|&i| stripped.is_char_boundary(i))
+        .unwrap_or(0);
+    judge::classify(&stripped[from..])
+}
+
+/// Name of the available judge helper (e.g. "claude"), or `None`.
+#[tauri::command]
+fn judge_helper() -> Option<String> {
+    judge::helper_name()
+}
+
 #[tauri::command]
 fn archive_agent(store: State<Store>, manager: State<SessionManager>, id: String) {
     let _ = manager.close(&id);
@@ -292,6 +322,22 @@ fn read_dir(path: String) -> Result<Vec<FileEntry>, String> {
 #[tauri::command]
 fn read_file(path: String) -> Result<FileContent, String> {
     fs::read_file(&path)
+}
+
+#[tauri::command]
+fn write_file(path: String, content: String) -> Result<(), String> {
+    fs::write_file(&path, &content)
+}
+
+#[tauri::command]
+fn create_file(path: String) -> Result<(), String> {
+    fs::create_file(&path)
+}
+
+/// Recursive repo-relative file list for the command palette (Go to File).
+#[tauri::command]
+fn list_files(path: String) -> Vec<String> {
+    fs::list_files(&path)
 }
 
 // --- claude sessions ---
@@ -345,6 +391,23 @@ fn git_pull(lock: State<GitLock>, cwd: String) -> Result<String, String> {
 fn git_push(lock: State<GitLock>, cwd: String) -> Result<String, String> {
     let _g = lock.0.lock().unwrap();
     git::push(&cwd)
+}
+
+#[tauri::command]
+fn git_branches(cwd: String) -> Branches {
+    git::branches(&cwd)
+}
+
+#[tauri::command]
+fn git_checkout(lock: State<GitLock>, cwd: String, branch: String) -> Result<String, String> {
+    let _g = lock.0.lock().unwrap();
+    git::checkout(&cwd, &branch)
+}
+
+#[tauri::command]
+fn git_create_branch(lock: State<GitLock>, cwd: String, name: String) -> Result<String, String> {
+    let _g = lock.0.lock().unwrap();
+    git::create_branch(&cwd, &name)
 }
 
 // --- run config ---
@@ -439,6 +502,23 @@ fn summary_dates(store: State<Store>) -> Vec<String> {
     summary::summary_dates(&store)
 }
 
+/// Claude-written narrative for the day (runs `claude -p`, cached per day).
+#[tauri::command]
+fn daily_summary_ai(
+    app: AppHandle,
+    store: State<Store>,
+    date: Option<String>,
+) -> Result<String, String> {
+    let day = date.filter(|d| !d.trim().is_empty()).unwrap_or_else(summary::today);
+    let projects = store.list_projects();
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("summaries");
+    summary::ai_summary(&store, &projects, &day, &cache_dir)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -492,6 +572,7 @@ pub fn run() {
             remove_project,
             list_agents,
             running_agents,
+            all_agents,
             spawn_agent,
             resume_agent,
             write_input,
@@ -499,6 +580,8 @@ pub fn run() {
             close_agent,
             mark_agent_exited,
             agent_scrollback,
+            judge_agent,
+            judge_helper,
             archive_agent,
             delete_agent,
             list_tasks,
@@ -507,6 +590,9 @@ pub fn run() {
             delete_task,
             read_dir,
             read_file,
+            write_file,
+            create_file,
+            list_files,
             claude_sessions,
             claude_usage,
             git_status,
@@ -514,6 +600,9 @@ pub fn run() {
             git_diff,
             git_commit_push,
             git_fetch,
+            git_branches,
+            git_checkout,
+            git_create_branch,
             git_pull,
             git_push,
             run_config,
@@ -530,6 +619,7 @@ pub fn run() {
             get_settings,
             set_daily_summary,
             daily_summary,
+            daily_summary_ai,
             summary_dates,
         ])
         .build(tauri::generate_context!())

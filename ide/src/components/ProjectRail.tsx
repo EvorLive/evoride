@@ -1,30 +1,61 @@
 import type { Project } from "../lib/tauri";
 
+function GridIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+
 // Leftmost rail: switch between projects, see which have running agents, and —
 // crucially — which are waiting for your input.
 export default function ProjectRail({
   projects,
   activeId,
+  homeActive = false,
+  workspaceActive = false,
   runningByProject,
   waitingProjects,
   onSelect,
   onOpen,
   onHome,
+  onWorkspace,
 }: {
   projects: Project[];
   activeId: string | null;
+  homeActive?: boolean;
+  workspaceActive?: boolean;
   runningByProject: Record<string, number>;
   waitingProjects: Set<string>;
   onSelect: (p: Project) => void;
   onOpen: () => void;
   onHome: () => void;
+  onWorkspace?: () => void;
 }) {
   return (
     <nav className="prail">
-      <button className="prail-brand" onClick={onHome} title="Home / overview">
+      <button
+        className={`prail-brand ${homeActive ? "active" : ""}`}
+        onClick={onHome}
+        title="Home / overview"
+      >
         <span className="brand-mark">▮</span>
         <span className="prail-brand-name">EvorIde</span>
       </button>
+      {onWorkspace && (
+        <button
+          className={`prail-workspace ${workspaceActive ? "active" : ""}`}
+          onClick={onWorkspace}
+          title="Multi-terminal workspace"
+        >
+          <GridIcon />
+          <span>Workspace</span>
+        </button>
+      )}
       <div className="prail-section">Projects</div>
       <ul className="prail-list">
         {projects.map((p) => {

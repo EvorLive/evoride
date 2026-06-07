@@ -101,22 +101,64 @@ pub fn diff(cwd: &str, file: Option<&str>) -> String {
         args.push("--");
         args.push(f);
     }
-    let out = Command::new("git")
+    let mut s = run_diff(cwd, &args);
+
+    // Untracked/new file: `diff HEAD` shows nothing, so show the whole file as
+    // additions via --no-index against /dev/null.
+    if s.trim().is_empty() {
+        if let Some(f) = file {
+            s = run_diff(cwd, &["--no-pager", "diff", "--no-index", "--", "/dev/null", f]);
+        }
+    }
+
+    if s.len() > MAX_DIFF {
+        s.truncate(MAX_DIFF);
+        s.push_str("\n… (diff truncated)");
+    }
+    s
+}
+
+fn run_diff(cwd: &str, args: &[&str]) -> String {
+    Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(&args)
-        .output();
-    match out {
-        Ok(o) => {
-            let mut s = String::from_utf8_lossy(&o.stdout).to_string();
-            if s.len() > MAX_DIFF {
-                s.truncate(MAX_DIFF);
-                s.push_str("\n… (diff truncated)");
-            }
-            s
-        }
-        Err(_) => String::new(),
+        .args(args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Branches {
+    pub current: String,
+    pub all: Vec<String>,
+}
+
+/// Local branches with the current one flagged.
+pub fn branches(cwd: &str) -> Branches {
+    let current = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let all = git(cwd, &["branch", "--format=%(refname:short)"])
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    Branches { current, all }
+}
+
+/// Checkout an existing branch.
+pub fn checkout(cwd: &str, branch: &str) -> Result<String, String> {
+    run_git(cwd, &["checkout", branch])
+}
+
+/// Create and switch to a new branch.
+pub fn create_branch(cwd: &str, name: &str) -> Result<String, String> {
+    if name.trim().is_empty() {
+        return Err("branch name is empty".into());
     }
+    run_git(cwd, &["checkout", "-b", name])
 }
 
 /// Stage everything, commit with `message`, and push. Returns combined output
