@@ -33,6 +33,7 @@ export default function GridWorkspace({
   inactiveAgents,
   projects,
   clis,
+  termMode,
   workspaces,
   activeWs,
   onSwitchWs,
@@ -46,6 +47,7 @@ export default function GridWorkspace({
   onSpawn,
   onRemoveTile,
   onAgentInput,
+  onPopOut,
 }: {
   tileIds: string[];
   maxTiles: number;
@@ -58,6 +60,8 @@ export default function GridWorkspace({
   projects: Project[];
   /** Enabled, configured launchable agents. */
   clis: CliDef[];
+  /** Resolved IDE color mode for the tile terminals. */
+  termMode: "light" | "dark";
   workspaces: Workspace[];
   activeWs: string;
   onSwitchWs: (id: string) => void;
@@ -74,6 +78,8 @@ export default function GridWorkspace({
   onRemoveTile: (id: string) => void;
   /** User typed into a tile's terminal (clear its "needs you"). */
   onAgentInput?: (id: string) => void;
+  /** Pop a tile's terminal out into its own window. */
+  onPopOut?: (id: string) => void;
 }) {
   const full = tileIds.length >= maxTiles;
   // Pull overlay is a two-step picker: project first, then agent.
@@ -332,6 +338,14 @@ export default function GridWorkspace({
                   </span>
                   <button
                     className="grid-tile-close"
+                    onClick={() => onPopOut?.(id)}
+                    title="Pop out into its own window"
+                    aria-label="Pop out terminal"
+                  >
+                    ⧉
+                  </button>
+                  <button
+                    className="grid-tile-close"
                     onClick={() => onRemoveTile(id)}
                     title="Remove from workspace (keeps the agent running)"
                     aria-label="Remove from workspace"
@@ -341,7 +355,7 @@ export default function GridWorkspace({
                 </div>
                 <div className="grid-tile-body">
                   {isLive ? (
-                    <AgentTerminal id={id} active onInput={() => onAgentInput?.(id)} />
+                    <AgentTerminal id={id} active mode={termMode} onInput={() => onAgentInput?.(id)} />
                   ) : (
                     // Restored-but-stopped tile: resume its session on demand.
                     <button

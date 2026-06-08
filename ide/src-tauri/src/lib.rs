@@ -68,6 +68,27 @@ fn set_always_on_top(window: tauri::WebviewWindow, on: bool) -> Result<(), Strin
     window.set_always_on_top(on).map_err(|e| e.to_string())
 }
 
+/// Pop a single agent's terminal out into its own window (shares the same pty,
+/// since state is in-process). The window loads the app in terminal-only mode.
+#[tauri::command]
+fn pop_out_terminal(app: AppHandle, id: String, title: Option<String>) -> Result<(), String> {
+    let label = format!("term-{}", id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-"));
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("index.html#term={id}").into()),
+    )
+    .title(format!("⧉ {}", title.unwrap_or_else(|| "Terminal".into())))
+    .inner_size(860.0, 560.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // --- projects ---
 
 #[tauri::command]
@@ -762,6 +783,7 @@ pub fn run() {
             which_agent,
             daily_summary_ai_cached,
             set_always_on_top,
+            pop_out_terminal,
             archive_agent,
             delete_agent,
             list_tasks,

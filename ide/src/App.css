@@ -707,6 +707,16 @@ body {
   min-width: 0;
   background: var(--bg);
 }
+/* Popped-out single-terminal window. */
+.term-window {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+}
+.term-window .term-host {
+  height: 100%;
+  width: 100%;
+}
 .term-slot {
   position: absolute;
   inset: 0;
@@ -2467,6 +2477,7 @@ body {
   width: 100%;
   text-align: left;
   padding: 14px;
+  color: var(--fg);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 11px;
@@ -2492,6 +2503,7 @@ body {
   color: var(--brand);
 }
 .home-card-name {
+  color: var(--fg);
   font-weight: 600;
   font-size: 14px;
   flex: 1;

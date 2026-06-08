@@ -282,6 +282,10 @@ export const judgeAgents = (ids: string[]) => invoke<JudgeResult[]>("judge_agent
 /// "Stick out" the window — float it above other apps (always-on-top).
 export const setAlwaysOnTop = (on: boolean) => invoke("set_always_on_top", { on });
 
+/// Pop an agent's terminal out into its own window (shares the same pty).
+export const popOutTerminal = (id: string, title?: string) =>
+  invoke("pop_out_terminal", { id, title });
+
 export interface ExitInfo {
   hasError: boolean;
   context: string;

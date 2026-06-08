@@ -148,6 +148,18 @@ export default function App() {
   }, [theme]);
   const cycleTheme = () =>
     setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system"));
+  // Resolve "system" to an actual light/dark mode so the terminal can match it.
+  const [prefersDark, setPrefersDark] = useState(
+    () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const on = (e: MediaQueryListEvent) => setPrefersDark(e.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  const termMode: "light" | "dark" =
+    theme === "system" ? (prefersDark ? "dark" : "light") : theme;
   // One-time: clear the old, fumble-prone auto-pin key so nobody is stuck on top.
   useEffect(() => {
     localStorage.removeItem("evoride-pinned");
@@ -1066,6 +1078,13 @@ export default function App() {
 
     // Agent launchers — spawn into the active project (workspace only).
     if (view === "workspace" && project) {
+      if (activeAgentId)
+        cmds.push({
+          id: "popout",
+          label: "Pop out current terminal",
+          hint: "Window",
+          run: () => void api.popOutTerminal(activeAgentId, agentsById[activeAgentId]?.title),
+        });
       cmds.push({ id: "new-claude", label: "New Claude session", hint: "Agent", run: () => newAgent("Claude", "claude") });
       cmds.push({ id: "new-shell", label: "New shell", hint: "Agent", run: () => newAgent("shell", "") });
       cmds.push({ id: "new-codex", label: "New Codex", hint: "Agent", run: () => newAgent("Codex", "codex") });
@@ -1090,7 +1109,7 @@ export default function App() {
 
     return cmds;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, project]);
+  }, [view, project, activeAgentId]);
 
   // Rendered once, overlaying whichever view is active.
   const palette = (
@@ -1248,6 +1267,7 @@ export default function App() {
               inactiveAgents={inactiveAgents}
               projects={knownProjects}
               clis={enabledAgentClis}
+              termMode={termMode}
               workspaces={workspaces}
               activeWs={activeWs}
               onSwitchWs={setActiveWs}
@@ -1261,6 +1281,7 @@ export default function App() {
               onSpawn={(pid, command, title) => void spawnToGrid(pid, command, title)}
               onRemoveTile={removeTile}
               onAgentInput={clearWaiting}
+              onPopOut={(id) => void api.popOutTerminal(id, agentsById[id]?.title)}
             />
           </Suspense>
         </div>
@@ -1501,6 +1522,7 @@ export default function App() {
                     key={activeAgentId}
                     id={activeAgentId}
                     active
+                    mode={termMode}
                     onInput={() => clearWaiting(activeAgentId)}
                     onUrl={(url) =>
                       setUrlByAgent((prev) =>

@@ -17,8 +17,9 @@ function b64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-const THEME = {
-  background: "#0b0d12",
+const DARK_THEME = {
+  // Slightly translucent so the terminal reads as its own surface over the panel.
+  background: "rgba(8, 10, 15, 0.55)",
   foreground: "#e6e8ee",
   cursor: "#38bdf8",
   cursorAccent: "#0b0d12",
@@ -40,6 +41,34 @@ const THEME = {
   brightCyan: "#9bf6ee",
   brightWhite: "#ffffff",
 };
+
+// Light theme so the terminal matches the IDE when it's in light mode — ANSI
+// colors darkened to read on a white background.
+const LIGHT_THEME = {
+  background: "rgba(255, 255, 255, 0.6)",
+  foreground: "#1e2530",
+  cursor: "#0284c7",
+  cursorAccent: "#ffffff",
+  selectionBackground: "#cfe3f5",
+  black: "#2b2f36",
+  red: "#d6336c",
+  green: "#2f9e44",
+  yellow: "#a06a00",
+  blue: "#1c7ed6",
+  magenta: "#9c36b5",
+  cyan: "#0c8599",
+  white: "#495057",
+  brightBlack: "#868e96",
+  brightRed: "#e8590c",
+  brightGreen: "#2b8a3e",
+  brightYellow: "#856100",
+  brightBlue: "#1971c2",
+  brightMagenta: "#862e9c",
+  brightCyan: "#0b7285",
+  brightWhite: "#212529",
+};
+
+const themeFor = (mode: "light" | "dark") => (mode === "light" ? LIGHT_THEME : DARK_THEME);
 
 // Strip ANSI/control bytes so URL sniffing doesn't capture escape codes.
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]/g;
@@ -73,12 +102,15 @@ const hasErrorSig = (s: string) => ERROR_SIGS.some((sig) => s.includes(sig));
 export default function AgentTerminal({
   id,
   active,
+  mode,
   onUrl,
   onIssue,
   onInput,
 }: {
   id: string;
   active: boolean;
+  /** Resolved IDE color mode so the terminal matches it. */
+  mode: "light" | "dark";
   onUrl?: (url: string) => void;
   /** Fires (with recent output) when a failure signature appears live. */
   onIssue?: (context: string) => void;
@@ -94,6 +126,13 @@ export default function AgentTerminal({
   onIssueRef.current = onIssue;
   const onInputRef = useRef(onInput);
   onInputRef.current = onInput;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
+  // Recolor the live terminal when the IDE switches light/dark (no recreate).
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = themeFor(mode);
+  }, [mode]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -101,10 +140,11 @@ export default function AgentTerminal({
 
     const term = new Terminal({
       cursorBlink: true,
+      allowTransparency: true, // so the slightly translucent bg reads over the panel
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: 12.5,
       lineHeight: 1.15,
-      theme: THEME,
+      theme: themeFor(modeRef.current),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -204,5 +244,8 @@ export default function AgentTerminal({
     return () => cancelAnimationFrame(raf);
   }, [active, id]);
 
+  // Host stays transparent over the pane (var(--bg)); the terminal's slightly
+  // translucent background composites over it — a subtle distinction, no
+  // mismatched third color in the padding/fit gap.
   return <div ref={hostRef} className="term-host" />;
 }
