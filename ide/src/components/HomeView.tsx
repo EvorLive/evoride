@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Markdown from "./Markdown";
 import * as api from "../lib/tauri";
+import * as demo from "../lib/demo";
 import type { AgentRecord, Project } from "../lib/tauri";
 
 /* ---- inline icons (no emoji as structural icons) ---- */
@@ -88,6 +89,10 @@ export default function HomeView({
   useEffect(() => {
     setAiSummary("");
     setAiError(null);
+    if (demo.isDemo()) {
+      setAiSummary(demo.demoRecap);
+      return;
+    }
     api.dailySummaryAiCached(day || undefined).then((c) => c && setAiSummary(c)).catch(() => {});
   }, [day]);
 
@@ -111,6 +116,12 @@ export default function HomeView({
   }, []);
 
   const refreshSummary = useCallback(() => {
+    if (demo.isDemo()) {
+      setSummary(
+        "**At a glance**\n\n- Projects: 3 (acme-api, storefront, ml-pipeline)\n- Lines committed: +1,240 / −380 across 3 repos\n- Uncommitted edits today: +312 / −47 in 1 (acme-api)\n- Claude: 1.8M tokens (Opus · Sonnet)",
+      );
+      return;
+    }
     api.dailySummary(day || undefined).then(setSummary).catch(() => setSummary(""));
   }, [day]);
   useEffect(() => {

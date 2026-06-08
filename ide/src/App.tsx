@@ -9,6 +9,7 @@ import HomeBar from "./components/HomeBar";
 import SettingsDialog from "./components/SettingsDialog";
 import CommandPalette, { type Command } from "./components/CommandPalette";
 import { loadAgents, saveAgents, enabledClis, type AgentConfig } from "./lib/agents";
+import * as demo from "./lib/demo";
 // Heavy / on-demand components are code-split (xterm, editor, diff, panels).
 const GridWorkspace = lazy(() => import("./components/GridWorkspace"));
 const AgentTerminal = lazy(() => import("./components/AgentTerminal"));
@@ -206,8 +207,22 @@ export default function App() {
       return next;
     });
 
-  // Open the most-recently-used project on launch.
+  const demoOn = demo.isDemo();
+
+  // Open the most-recently-used project on launch — OR, in demo/screenshot mode,
+  // seed the dashboard with realistic fake data and stay on Home.
   useEffect(() => {
+    if (demoOn) {
+      setKnownProjects(demo.demoProjects);
+      setRunningList(demo.demoRunning);
+      setWaitingAgents(new Set(demo.demoWaitingIds));
+      setWaitingOptions(demo.demoOptions);
+      setWaitingQuestion(demo.demoQuestion);
+      setWaitingTextMode(demo.demoTextMode);
+      setAgentState(demo.demoState);
+      setView("home");
+      return;
+    }
     api
       .listProjects()
       .then((ps) => {
@@ -215,6 +230,7 @@ export default function App() {
         if (ps.length) setProject(ps[ps.length - 1]);
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshAgents = useCallback((pid: string) => {
@@ -718,8 +734,9 @@ export default function App() {
     };
   }, [project]);
 
-  // Poll running agents across all projects (for the rail).
+  // Poll running agents across all projects (for the rail). Frozen in demo mode.
   useEffect(() => {
+    if (demoOn) return;
     let alive = true;
     const poll = () =>
       api.runningAgents().then((r) => alive && setRunningList(r)).catch(() => {});
@@ -794,7 +811,7 @@ export default function App() {
   // helper call per tick (not one process per agent), reconciling the "needs you"
   // flag: adding misses, clearing false positives, marking passively-idle ones.
   useEffect(() => {
-    if (!hasJudge || !judgeEnabled) return;
+    if (demoOn || !hasJudge || !judgeEnabled) return;
     const IDLE_MS = 3000;
     let busy = false; // one batch in flight at a time
     const applyVerdict = (id: string, j: api.Judgement | null) => {
@@ -1035,6 +1052,12 @@ export default function App() {
     // Appearance + settings (always).
     cmds.push({ id: "toggle-theme", label: "Toggle theme", hint: "Appearance", run: cycleTheme });
     cmds.push({ id: "settings", label: "Settings…", hint: "⌘,", run: () => setSettingsOpen(true) });
+    cmds.push({
+      id: "demo",
+      label: demoOn ? "Turn OFF demo data" : "Demo data (for screenshots)",
+      hint: "Screenshot",
+      run: () => demo.toggleDemo(),
+    });
 
     return cmds;
     // eslint-disable-next-line react-hooks/exhaustive-deps
