@@ -97,6 +97,8 @@ export default function App() {
   const [waitingOptions, setWaitingOptions] = useState<Record<string, string[]>>({});
   // What each waiting agent is asking (the question/prompt text).
   const [waitingQuestion, setWaitingQuestion] = useState<Record<string, string>>({});
+  // true → the agent's choices are free-text (send the label), not a numbered menu.
+  const [waitingTextMode, setWaitingTextMode] = useState<Record<string, boolean>>({});
   // Hidden helper-judge: per-agent classified state + plumbing to run it on idle.
   const [agentState, setAgentState] = useState<Record<string, "working" | "passive" | "active">>({});
   const [hasJudge, setHasJudge] = useState(false);
@@ -449,6 +451,11 @@ export default function App() {
       const { [id]: _drop, ...rest } = prev;
       return rest;
     });
+    setWaitingTextMode((prev) => {
+      if (!(id in prev)) return prev;
+      const { [id]: _drop, ...rest } = prev;
+      return rest;
+    });
     // The user is responding — reset the idle clock so the judge re-evaluates.
     lastOutputRef.current[id] = Date.now();
   };
@@ -460,8 +467,10 @@ export default function App() {
   const acceptAgent = (id: string) => reply(id, "\r");
   const yesAgent = (id: string) => reply(id, "y\r");
   const noAgent = (id: string) => reply(id, "n\r");
-  // Pick option N of a numbered select menu (send the digit + Enter).
-  const pickOption = (id: string, n: number) => reply(id, `${n}\r`);
+  // Pick a choice: a real numbered menu takes the digit; judge-inferred choices
+  // on a free-text question take the choice's TEXT (typing "1" wouldn't work).
+  const pickOption = (id: string, n: number, label: string) =>
+    reply(id, waitingTextMode[id] ? `${label}\r` : `${n}\r`);
 
   // Native window menu → app actions.
   useEffect(() => {
@@ -749,6 +758,12 @@ export default function App() {
           }
           return { ...prev, [id]: question };
         });
+        // Regex options come from a real ❯ numbered menu → select by number.
+        setWaitingTextMode((prev) => {
+          if (!(id in prev)) return prev;
+          const { [id]: _drop, ...rest } = prev;
+          return rest;
+        });
       })
       .then((u) => {
         un = u;
@@ -797,6 +812,15 @@ export default function App() {
       });
       setWaitingOptions((p) => {
         if (active && j.options.length) return { ...p, [id]: j.options };
+        if (!active && id in p) {
+          const { [id]: _drop, ...rest } = p;
+          return rest;
+        }
+        return p;
+      });
+      // Judge-inferred choices on a free-text question → reply with the text.
+      setWaitingTextMode((p) => {
+        if (active && j.options.length) return { ...p, [id]: true };
         if (!active && id in p) {
           const { [id]: _drop, ...rest } = p;
           return rest;
@@ -1082,6 +1106,7 @@ export default function App() {
             waitingAgents={waitingAgents}
             waitingOptions={waitingOptions}
             waitingQuestion={waitingQuestion}
+            textModes={waitingTextMode}
             runningByProject={runningByProject}
             waitingProjects={waitingProjects}
             onOpenProject={openProjectFromHome}

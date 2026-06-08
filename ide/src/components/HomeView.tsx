@@ -43,6 +43,7 @@ export default function HomeView({
   waitingAgents,
   waitingOptions,
   waitingQuestion,
+  textModes,
   runningByProject,
   waitingProjects,
   onOpenProject,
@@ -59,6 +60,8 @@ export default function HomeView({
   waitingOptions: Record<string, string[]>;
   /** What each waiting agent is asking. */
   waitingQuestion: Record<string, string>;
+  /** true → the choices are free-text (send the label), not a numbered menu. */
+  textModes: Record<string, boolean>;
   runningByProject: Record<string, number>;
   waitingProjects: Set<string>;
   onOpenProject: (p: Project) => void;
@@ -66,7 +69,7 @@ export default function HomeView({
   onAccept: (id: string) => void;
   onYes: (id: string) => void;
   onNo: (id: string) => void;
-  onPick: (id: string, n: number) => void;
+  onPick: (id: string, n: number, label: string) => void;
 }) {
   const [summary, setSummary] = useState<string>("");
   const [dailyOn, setDailyOn] = useState(true);
@@ -162,16 +165,18 @@ export default function HomeView({
                       {question && <span className="home-question">“{question}”</span>}
                     </div>
                     {opts.length > 0 ? (
-                      // A numbered select menu — offer its actual choices.
+                      // Offer the choices. For a real numbered menu we send the
+                      // number; for judge-inferred choices on a free-text question
+                      // we send the choice's TEXT (typing "1" wouldn't make sense).
                       <div className="home-actions home-choices">
                         {opts.map((label, i) => (
                           <button
                             key={i}
                             className={`btn ${i === 0 ? "primary" : "btn-ghost"} home-choice`}
-                            onClick={() => onPick(a.id, i + 1)}
-                            title={`Send ${i + 1} + Enter`}
+                            onClick={() => onPick(a.id, i + 1, label)}
+                            title={textModes[a.id] ? `Reply "${label}"` : `Send ${i + 1} + Enter`}
                           >
-                            <span className="home-choice-n">{i + 1}</span>
+                            {!textModes[a.id] && <span className="home-choice-n">{i + 1}</span>}
                             <span className="home-choice-label">{label}</span>
                           </button>
                         ))}
