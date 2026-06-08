@@ -157,6 +157,38 @@ export default function AgentTerminal({
       void writeInput(id, data);
     });
 
+    // Copy / paste. ⌘C (mac) or Ctrl+Shift+C copies the selection; ⌘V (mac) or
+    // Ctrl+Shift+V pastes into the pty. Returning false stops xterm/the pty from
+    // also seeing the key (so ⌘C doesn't send ^C).
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      const k = e.key.toLowerCase();
+      const copyCombo = (e.metaKey && k === "c") || (e.ctrlKey && e.shiftKey && k === "c");
+      const pasteCombo = (e.metaKey && k === "v") || (e.ctrlKey && e.shiftKey && k === "v");
+      if (copyCombo && term.hasSelection()) {
+        navigator.clipboard?.writeText(term.getSelection()).catch(() => {});
+        return false;
+      }
+      if (pasteCombo) {
+        navigator.clipboard
+          ?.readText()
+          .then((t) => t && writeInput(id, t))
+          .catch(() => {});
+        return false;
+      }
+      return true;
+    });
+
+    // Right-click to paste (the global context menu is suppressed elsewhere).
+    const onContext = (ev: MouseEvent) => {
+      ev.preventDefault();
+      navigator.clipboard
+        ?.readText()
+        .then((t) => t && writeInput(id, t))
+        .catch(() => {});
+    };
+    host.addEventListener("contextmenu", onContext);
+
     // Only fit/resize when the tile is actually visible with real width —
     // fitting while hidden (display:none) would size the pty to ~1 column.
     const doFit = () => {
@@ -215,6 +247,7 @@ export default function AgentTerminal({
     return () => {
       disposed = true;
       ro.disconnect();
+      host.removeEventListener("contextmenu", onContext);
       unlisteners.forEach((u) => u());
       term.dispose();
       termRef.current = null;
