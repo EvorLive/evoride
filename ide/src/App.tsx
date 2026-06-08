@@ -68,6 +68,8 @@ export default function App() {
   const [sessions, setSessions] = useState<ClaudeSession[]>([]);
   const [git, setGit] = useState<GitStatus | null>(null);
   const [live, setLive] = useState<Set<string>>(new Set());
+  // Agent ids whose terminal is currently popped out into its own window.
+  const [poppedOut, setPoppedOut] = useState<Set<string>>(new Set());
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   // One right-side panel at a time (git/plan/intent/files/edits), or none.
   type RightPanel = "git" | "plan" | "intent" | "files" | "edits";
@@ -419,8 +421,10 @@ export default function App() {
   // Workspace management: add, switch, close, rename.
   const addWorkspace = () => {
     const n = workspaces.length + 1;
+    const name = window.prompt("Name this workspace", `Workspace ${n}`)?.trim();
+    if (name === undefined) return; // cancelled
     const id = `ws-${Date.now()}`;
-    setWorkspaces((prev) => [...prev, { id, name: `Workspace ${n}`, tiles: [] }]);
+    setWorkspaces((prev) => [...prev, { id, name: name || `Workspace ${n}`, tiles: [] }]);
     setActiveWs(id);
   };
   const closeWorkspace = (id: string) => {
@@ -525,6 +529,31 @@ export default function App() {
     return () => un?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Track popped-out terminals (so the IDE shows a placeholder + can re-attach).
+  useEffect(() => {
+    api.poppedOut().then((ids) => setPoppedOut(new Set(ids))).catch(() => {});
+    let un: (() => void) | undefined;
+    api
+      .onPopoutChanged((id, open) =>
+        setPoppedOut((prev) => {
+          const n = new Set(prev);
+          if (open) n.add(id);
+          else n.delete(id);
+          return n;
+        }),
+      )
+      .then((u) => {
+        un = u;
+      });
+    return () => un?.();
+  }, []);
+  const popOut = (id: string) => void api.popOutTerminal(id, agentsById[id]?.title);
+  const renameAgent = (id: string, title: string) => {
+    api.setAgentTitle(id, title).catch(() => {});
+    setAgents((prev) => prev.map((a) => (a.id === id ? { ...a, title } : a)));
+    setRunningList((prev) => prev.map((a) => (a.id === id ? { ...a, title } : a)));
+  };
 
   // Reset the center diff when switching project.
   useEffect(() => setDiffView(null), [project]);
@@ -1268,6 +1297,8 @@ export default function App() {
               projects={knownProjects}
               clis={enabledAgentClis}
               termMode={termMode}
+              poppedOut={poppedOut}
+              onClosePopout={(id) => void api.closePopout(id)}
               workspaces={workspaces}
               activeWs={activeWs}
               onSwitchWs={setActiveWs}
@@ -1361,6 +1392,7 @@ export default function App() {
           onDelete={deleteAgentH}
           onUnarchive={unarchiveAgentH}
           onContinueSession={continueSession}
+          onRename={renameAgent}
         />
 
         <main className="main">
@@ -1441,6 +1473,29 @@ export default function App() {
               >
                 ✦
               </button>
+              {activeIsLive && activeAgentId && !poppedOut.has(activeAgentId) && (
+                <>
+                  <button
+                    className="btn-sm icon"
+                    onClick={() => popOut(activeAgentId)}
+                    title="Pop out this terminal into its own window"
+                    aria-label="Pop out terminal"
+                  >
+                    ⧉
+                  </button>
+                  <button
+                    className="btn-sm icon"
+                    onClick={() => {
+                      addRunningToGrid(activeAgentId);
+                      setView("grid");
+                    }}
+                    title="Add this terminal to the Workspace grid"
+                    aria-label="Add to workspace"
+                  >
+                    ⊞
+                  </button>
+                </>
+              )}
               {openFiles.length > 0 && (
                 <>
                   <span className="tb-sep" />
@@ -1515,6 +1570,15 @@ export default function App() {
                     onActivate={setActiveFile}
                     onClose={closeFile}
                   />
+                </div>
+              ) : activeIsLive && activeAgentId && poppedOut.has(activeAgentId) ? (
+                <div className="term-slot term-placeholder">
+                  <p>⧉ This terminal is popped out into its own window.</p>
+                  <div className="ph-actions">
+                    <button className="btn" onClick={() => void api.closePopout(activeAgentId)}>
+                      Close pop-out & open here
+                    </button>
+                  </div>
                 </div>
               ) : activeIsLive && activeAgentId ? (
                 <div className="term-slot">

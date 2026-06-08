@@ -285,6 +285,21 @@ export const setAlwaysOnTop = (on: boolean) => invoke("set_always_on_top", { on 
 /// Pop an agent's terminal out into its own window (shares the same pty).
 export const popOutTerminal = (id: string, title?: string) =>
   invoke("pop_out_terminal", { id, title });
+/// Agent ids whose terminal is currently popped out into its own window.
+export const poppedOut = () => invoke<string[]>("popped_out");
+/// Close an agent's popped-out window (re-attaches it in the IDE).
+export const closePopout = (id: string) => invoke("close_popout", { id });
+/// Listen for popout open/close across windows.
+export async function onPopoutChanged(
+  cb: (id: string, open: boolean) => void,
+): Promise<UnlistenFn> {
+  return listen<{ id: string; open: boolean }>("popout-changed", (ev) =>
+    cb(ev.payload.id, ev.payload.open),
+  );
+}
+/// Rename an agent (its displayed title).
+export const setAgentTitle = (id: string, title: string) =>
+  invoke("set_agent_title", { id, title });
 
 export interface ExitInfo {
   hasError: boolean;

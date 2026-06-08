@@ -68,16 +68,39 @@ fn set_always_on_top(window: tauri::WebviewWindow, on: bool) -> Result<(), Strin
     window.set_always_on_top(on).map_err(|e| e.to_string())
 }
 
+/// Agent ids whose terminal is currently popped out into its own window.
+#[derive(Default)]
+struct PoppedOut(Mutex<std::collections::HashSet<String>>);
+
+#[derive(Clone, serde::Serialize)]
+struct PopoutEvent {
+    id: String,
+    open: bool,
+}
+
+fn popout_label(id: &str) -> String {
+    format!(
+        "term-{}",
+        id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-")
+    )
+}
+
 /// Pop a single agent's terminal out into its own window (shares the same pty,
-/// since state is in-process). The window loads the app in terminal-only mode.
+/// since state is in-process). The main window shows a "popped out" placeholder
+/// while it's open, and re-attaches when it closes.
 #[tauri::command]
-fn pop_out_terminal(app: AppHandle, id: String, title: Option<String>) -> Result<(), String> {
-    let label = format!("term-{}", id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-"));
+fn pop_out_terminal(
+    app: AppHandle,
+    popped: State<PoppedOut>,
+    id: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    let label = popout_label(&id);
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(
+    let win = WebviewWindowBuilder::new(
         &app,
         &label,
         WebviewUrl::App(format!("index.html#term={id}").into()),
@@ -86,7 +109,36 @@ fn pop_out_terminal(app: AppHandle, id: String, title: Option<String>) -> Result
     .inner_size(860.0, 560.0)
     .build()
     .map_err(|e| e.to_string())?;
+
+    popped.0.lock().unwrap().insert(id.clone());
+    let _ = app.emit("popout-changed", PopoutEvent { id: id.clone(), open: true });
+
+    // When the popout window closes, un-mark it so the main view re-attaches.
+    let app2 = app.clone();
+    let id2 = id.clone();
+    win.on_window_event(move |ev| {
+        if matches!(ev, tauri::WindowEvent::Destroyed) {
+            if let Some(s) = app2.try_state::<PoppedOut>() {
+                s.0.lock().unwrap().remove(&id2);
+            }
+            let _ = app2.emit("popout-changed", PopoutEvent { id: id2.clone(), open: false });
+        }
+    });
     Ok(())
+}
+
+/// Currently popped-out agent ids (for a window to sync on load).
+#[tauri::command]
+fn popped_out(popped: State<PoppedOut>) -> Vec<String> {
+    popped.0.lock().unwrap().iter().cloned().collect()
+}
+
+/// Close an agent's popped-out window (so its terminal re-attaches in the IDE).
+#[tauri::command]
+fn close_popout(app: AppHandle, id: String) {
+    if let Some(w) = app.get_webview_window(&popout_label(&id)) {
+        let _ = w.close();
+    }
 }
 
 // --- projects ---
@@ -280,6 +332,15 @@ fn close_agent(store: State<Store>, manager: State<SessionManager>, id: String) 
 #[tauri::command]
 fn mark_agent_exited(store: State<Store>, id: String) {
     store.set_agent_status(&id, "exited");
+}
+
+/// Rename an agent (its displayed title).
+#[tauri::command]
+fn set_agent_title(store: State<Store>, id: String, title: String) {
+    let t = title.trim();
+    if !t.is_empty() {
+        store.set_agent_title(&id, t);
+    }
 }
 
 /// Base64 scrollback for restoring a discarded (background) terminal.
@@ -716,6 +777,7 @@ pub fn run() {
         .manage(SessionManager::new())
         .manage(GitLock::default())
         .manage(JudgeCache::default())
+        .manage(PoppedOut::default())
         .setup(|app| {
             let dir = app
                 .path()
@@ -784,6 +846,9 @@ pub fn run() {
             daily_summary_ai_cached,
             set_always_on_top,
             pop_out_terminal,
+            popped_out,
+            close_popout,
+            set_agent_title,
             archive_agent,
             delete_agent,
             list_tasks,

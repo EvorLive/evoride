@@ -34,6 +34,8 @@ export default function GridWorkspace({
   projects,
   clis,
   termMode,
+  poppedOut,
+  onClosePopout,
   workspaces,
   activeWs,
   onSwitchWs,
@@ -62,6 +64,9 @@ export default function GridWorkspace({
   clis: CliDef[];
   /** Resolved IDE color mode for the tile terminals. */
   termMode: "light" | "dark";
+  /** Agent ids popped out into their own window. */
+  poppedOut: Set<string>;
+  onClosePopout: (id: string) => void;
   workspaces: Workspace[];
   activeWs: string;
   onSwitchWs: (id: string) => void;
@@ -354,7 +359,12 @@ export default function GridWorkspace({
                   </button>
                 </div>
                 <div className="grid-tile-body">
-                  {isLive ? (
+                  {poppedOut.has(id) ? (
+                    <button className="grid-tile-resume" onClick={() => onClosePopout(id)} title="Close the pop-out window">
+                      <span className="grid-tile-resume-icon">⧉</span>
+                      <span>Popped out — click to bring back</span>
+                    </button>
+                  ) : isLive ? (
                     <AgentTerminal id={id} active mode={termMode} onInput={() => onAgentInput?.(id)} />
                   ) : (
                     // Restored-but-stopped tile: resume its session on demand.

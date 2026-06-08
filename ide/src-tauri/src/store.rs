@@ -307,6 +307,14 @@ impl Store {
         );
     }
 
+    pub fn set_agent_title(&self, id: &str, title: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE agents SET title = ?1 WHERE id = ?2",
+            params![title, id],
+        );
+    }
+
     /// Permanently remove an agent record.
     pub fn delete_agent(&self, id: &str) {
         let conn = self.conn.lock().unwrap();

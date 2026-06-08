@@ -31,6 +31,7 @@ export default function AgentsColumn({
   onDelete,
   onUnarchive,
   onContinueSession,
+  onRename,
 }: {
   agents: AgentRecord[];
   archived: AgentRecord[];
@@ -55,6 +56,7 @@ export default function AgentsColumn({
   onDelete: (id: string) => void;
   onUnarchive: (id: string) => void;
   onContinueSession: (s: ClaudeSession) => void;
+  onRename: (id: string, title: string) => void;
 }) {
   const [showArchived, setShowArchived] = useState(false);
   const [title, setTitle] = useState("");
@@ -101,7 +103,16 @@ export default function AgentsColumn({
                 />
                 <div className="agent-meta">
                   <div className="agent-title">
-                    {a.title}
+                    <span
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        const name = window.prompt("Rename agent", a.title);
+                        if (name && name.trim()) onRename(a.id, name.trim());
+                      }}
+                      title="Double-click to rename"
+                    >
+                      {a.title}
+                    </span>
                     {isWaiting && (
                       <span className="agent-wait-pill" title="Actively waiting — needs your input">
                         needs you
