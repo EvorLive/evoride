@@ -79,7 +79,10 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The org disables write for the default GITHUB_TOKEN, which blocks
+          # creating the Release. Add a repo secret RELEASE_TOKEN (a PAT with
+          # contents:write) and it'll be used; otherwise it falls back.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         with:
           projectPath: ide
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', github.run_number) }}
