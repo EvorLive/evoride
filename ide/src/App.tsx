@@ -1052,12 +1052,6 @@ export default function App() {
     // Appearance + settings (always).
     cmds.push({ id: "toggle-theme", label: "Toggle theme", hint: "Appearance", run: cycleTheme });
     cmds.push({ id: "settings", label: "Settings…", hint: "⌘,", run: () => setSettingsOpen(true) });
-    cmds.push({
-      id: "demo",
-      label: demoOn ? "Turn OFF demo data" : "Demo data (for screenshots)",
-      hint: "Screenshot",
-      run: () => demo.toggleDemo(),
-    });
 
     return cmds;
     // eslint-disable-next-line react-hooks/exhaustive-deps

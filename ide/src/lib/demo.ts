@@ -1,23 +1,19 @@
 // Demo / screenshot mode. When on, the UI is seeded with realistic FAKE data so
 // you can screenshot the dashboard (for a README/Show HN) without exposing your
-// real repos. Toggle it from the command palette ("Toggle demo data") or set
-// localStorage `evoride-demo=1` / build with VITE_EVORIDE_DEMO=1.
+// real repos.
+//
+// It is intentionally NOT reachable from the UI (no palette command, no toggle,
+// no localStorage). It only activates when the app is built/run with the env var
+// VITE_EVORIDE_DEMO set to the exact secret below — e.g.:
+//   VITE_EVORIDE_DEMO=evor-demo-7Qx2k9 pnpm tauri dev
 
 import type { AgentRecord, Project } from "./tauri";
 
-export function isDemo(): boolean {
-  try {
-    if (localStorage.getItem("evoride-demo") === "1") return true;
-  } catch {
-    /* ignore */
-  }
-  return import.meta.env?.VITE_EVORIDE_DEMO === "1";
-}
+// Password-like sentinel — demo mode only turns on for this exact value.
+const DEMO_SECRET = "evor-demo-7Qx2k9";
 
-export function toggleDemo() {
-  const next = isDemo() ? "0" : "1";
-  localStorage.setItem("evoride-demo", next);
-  location.reload();
+export function isDemo(): boolean {
+  return import.meta.env?.VITE_EVORIDE_DEMO === DEMO_SECRET;
 }
 
 const now = Math.floor(Date.now() / 1000);
