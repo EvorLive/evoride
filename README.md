@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.png" width="96" alt="EvorIDE logo" />
+
 # EvorIDE
 
 ### Run many coding agents at once — and always know which one needs you.
