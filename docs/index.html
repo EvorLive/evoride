@@ -238,6 +238,13 @@
           <tr><th>Linux</th><td><code>.AppImage</code> / <code>.deb</code></td></tr>
         </table>
 
+        <p style="margin-top:14px;color:var(--fg-muted);font-size:14px">
+          <b>First launch:</b> builds aren’t code-signed yet. On <b>macOS</b>, if it says the app
+          “cannot be verified”, <b>right-click the app → Open</b> (confirm once), or run
+          <code>xattr -dr com.apple.quarantine /Applications/EvorIDE.app</code>. On <b>Windows</b>,
+          if SmartScreen warns, click <b>More info → Run anyway</b>.
+        </p>
+
         <h3 style="margin-top:26px">Build from source</h3>
         <p>Prereqs: <a href="https://rustup.rs">Rust</a>, Node 20+, <a href="https://pnpm.io">pnpm</a>, and the <a href="https://tauri.app/start/prerequisites/">Tauri prerequisites</a>.</p>
         <pre>git clone $REPO

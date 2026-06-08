@@ -83,7 +83,13 @@ jobs:
           projectPath: ide
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', github.run_number) }}
           releaseName: "EvorIDE ${{ github.ref_type == 'tag' && github.ref_name || github.run_number }}"
-          releaseBody: "Download the installer for your OS below. See the docs to get started."
+          releaseBody: |
+            Download the installer for your OS below. See the docs to get started.
+
+            **First launch (macOS):** the build isn't code-signed yet, so macOS will say it "cannot be verified". Either **right-click the app → Open** (then confirm once), or run:
+            `xattr -dr com.apple.quarantine /Applications/EvorIDE.app`
+
+            **Windows:** if SmartScreen warns, click **More info → Run anyway**.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
