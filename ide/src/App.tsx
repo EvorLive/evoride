@@ -13,6 +13,7 @@ import { loadAgents, saveAgents, enabledClis, type AgentConfig } from "./lib/age
 import * as demo from "./lib/demo";
 // Heavy / on-demand components are code-split (xterm, editor, diff, panels).
 const GridWorkspace = lazy(() => import("./components/GridWorkspace"));
+const TasksView = lazy(() => import("./components/TasksView"));
 const AgentTerminal = lazy(() => import("./components/AgentTerminal"));
 const Editor = lazy(() => import("./components/Editor"));
 const DiffView = lazy(() => import("./components/DiffView"));
@@ -60,7 +61,7 @@ interface Workspace {
 export default function App() {
   // Top-level view: the cross-project Home dashboard, or the single-project
   // workspace. Defaults to Home on launch when projects exist.
-  const [view, setView] = useState<"home" | "workspace" | "grid">("home");
+  const [view, setView] = useState<"home" | "workspace" | "grid" | "tasks">("home");
   // The IDE is scoped to a single project.
   const [project, setProject] = useState<Project | null>(null);
   const [agents, setAgents] = useState<AgentRecord[]>([]);
@@ -549,6 +550,22 @@ export default function App() {
     return () => un?.();
   }, []);
   const popOut = (id: string) => void api.popOutTerminal(id, agentsById[id]?.title);
+  // Cross-project tasks (the Tasks / planning page).
+  const [allTasksList, setAllTasksList] = useState<Task[]>([]);
+  const refreshAllTasks = useCallback(() => {
+    api.allTasks().then(setAllTasksList).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (view === "tasks") refreshAllTasks();
+  }, [view, refreshAllTasks]);
+  const addTaskGlobal = (title: string, projectId: string, plannedFor: string) =>
+    api.addTask(projectId, title, undefined, plannedFor).then(refreshAllTasks).catch(() => {});
+  const cycleTaskGlobal = (t: Task) =>
+    api.updateTask(t.id, NEXT_STATUS[t.status]).then(refreshAllTasks).catch(() => {});
+  const assignTaskGlobal = (id: string, projectId: string) =>
+    api.assignTask(id, projectId).then(refreshAllTasks).catch(() => {});
+  const delTaskGlobal = (id: string) =>
+    api.deleteTask(id).then(refreshAllTasks).catch(() => {});
   const renameAgent = (id: string, title: string) => {
     api.setAgentTitle(id, title).catch(() => {});
     setAgents((prev) => prev.map((a) => (a.id === id ? { ...a, title } : a)));
@@ -1079,6 +1096,8 @@ export default function App() {
       cmds.push({ id: "home", label: "Go to Home", hint: "View", run: () => setView("home") });
     if (view !== "grid")
       cmds.push({ id: "grid", label: "Open Workspace (grid)", hint: "View", run: () => setView("grid") });
+    if (view !== "tasks")
+      cmds.push({ id: "tasks", label: "Tasks — plan your day", hint: "View", run: () => setView("tasks") });
     if (project && view !== "workspace")
       cmds.push({ id: "back", label: `Back to ${project.name}`, hint: "View", run: () => setView("workspace") });
 
@@ -1233,6 +1252,7 @@ export default function App() {
             onOpen={openFolder}
             onHome={() => setView("home")}
             onWorkspace={() => setView("grid")}
+            onTasks={() => setView("tasks")}
           />
           <HomeView
             projects={knownProjects}
@@ -1284,6 +1304,7 @@ export default function App() {
             onOpen={openFolder}
             onHome={() => setView("home")}
             onWorkspace={() => setView("grid")}
+            onTasks={() => setView("tasks")}
           />
           <Suspense fallback={<div className="grid-view" />}>
             <GridWorkspace
@@ -1313,6 +1334,52 @@ export default function App() {
               onRemoveTile={removeTile}
               onAgentInput={clearWaiting}
               onPopOut={(id) => void api.popOutTerminal(id, agentsById[id]?.title)}
+            />
+          </Suspense>
+        </div>
+        <HomeBar
+          version={appVer}
+          projectCount={knownProjects.length}
+          runningCount={runningList.length}
+          waitingCount={waitingAgents.size}
+          onOpenPalette={() => openPalette("commands")}
+          onOpenSettings={() => setSettingsOpen(true)}
+          theme={theme}
+          onCycleTheme={cycleTheme}
+        />
+        {palette}
+      </div>
+    );
+  }
+
+  // Tasks / daily planning across all projects.
+  if (view === "tasks") {
+    return (
+      <div className="ide">
+        <div className="ide-main">
+          <ProjectRail
+            projects={knownProjects}
+            activeId={null}
+            tasksActive
+            runningByProject={runningByProject}
+            waitingProjects={waitingProjects}
+            onSelect={(p) => {
+              setProject(p);
+              setView("workspace");
+            }}
+            onOpen={openFolder}
+            onHome={() => setView("home")}
+            onWorkspace={() => setView("grid")}
+            onTasks={() => setView("tasks")}
+          />
+          <Suspense fallback={<div className="tasks-view" />}>
+            <TasksView
+              tasks={allTasksList}
+              projects={knownProjects}
+              onAdd={addTaskGlobal}
+              onCycle={(t) => void cycleTaskGlobal(t)}
+              onAssign={(id, pid) => void assignTaskGlobal(id, pid)}
+              onDelete={(id) => void delTaskGlobal(id)}
             />
           </Suspense>
         </div>
@@ -1362,6 +1429,7 @@ export default function App() {
           onOpen={openFolder}
           onHome={() => setView("home")}
           onWorkspace={() => setView("grid")}
+            onTasks={() => setView("tasks")}
         />
         <AgentsColumn
           agents={activeAgents}

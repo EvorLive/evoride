@@ -29,11 +29,16 @@ export interface AgentRecord {
 
 export interface Task {
   id: string;
+  /** Owning project id, or "" when unassigned. */
   project_id: string;
   title: string;
   status: "todo" | "doing" | "done";
   agent_id: string | null;
   created_at: number;
+  planned_for?: string | null;
+  source?: string;
+  external_id?: string | null;
+  external_url?: string | null;
 }
 
 export interface GitStatus {
@@ -124,10 +129,19 @@ export const deleteAgent = (id: string) => invoke("delete_agent", { id });
 // --- tasks ---
 export const listTasks = (projectId: string) =>
   invoke<Task[]>("list_tasks", { projectId });
-export const addTask = (projectId: string, title: string, agentId?: string) =>
-  invoke<Task>("add_task", { projectId, title, agentId });
+/// Every task across all projects (for the Tasks / planning page).
+export const allTasks = () => invoke<Task[]>("all_tasks");
+export const addTask = (
+  projectId: string,
+  title: string,
+  agentId?: string,
+  plannedFor?: string,
+) => invoke<Task>("add_task", { projectId, title, agentId, plannedFor });
 export const updateTask = (id: string, status: Task["status"]) =>
   invoke("update_task", { id, status });
+/// Assign a task to a project ("" = unassigned).
+export const assignTask = (id: string, projectId: string) =>
+  invoke("assign_task", { id, projectId });
 export const deleteTask = (id: string) => invoke("delete_task", { id });
 
 // --- files ---

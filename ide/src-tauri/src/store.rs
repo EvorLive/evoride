@@ -34,12 +34,23 @@ pub struct AgentRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
+    /// Owning project, or "" when unassigned (e.g. an agent couldn't relate it).
     pub project_id: String,
     pub title: String,
     /// "todo" | "doing" | "done"
     pub status: String,
     pub agent_id: Option<String>,
     pub created_at: i64,
+    /// The day it's planned for (YYYY-MM-DD), for daily planning.
+    #[serde(default)]
+    pub planned_for: Option<String>,
+    /// Where it came from — "local" | "jira" | "notion" | "evor".
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub external_url: Option<String>,
 }
 
 /// Legacy on-disk JSON shape, used only for the one-time import into SQLite.
@@ -118,14 +129,28 @@ impl Store {
                  status      TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS tasks (
-                 id          TEXT PRIMARY KEY,
-                 project_id  TEXT NOT NULL,
-                 title       TEXT NOT NULL,
-                 status      TEXT NOT NULL,
-                 agent_id    TEXT,
-                 created_at  INTEGER NOT NULL
+                 id           TEXT PRIMARY KEY,
+                 project_id   TEXT NOT NULL,
+                 title        TEXT NOT NULL,
+                 status       TEXT NOT NULL,
+                 agent_id     TEXT,
+                 created_at   INTEGER NOT NULL,
+                 planned_for  TEXT,
+                 source       TEXT,
+                 external_id  TEXT,
+                 external_url TEXT
              );",
         );
+        // Add the planning/sync columns to pre-existing task tables (ignore the
+        // "duplicate column" error on subsequent runs).
+        for col in [
+            "planned_for TEXT",
+            "source TEXT",
+            "external_id TEXT",
+            "external_url TEXT",
+        ] {
+            let _ = conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col}"), []);
+        }
     }
 
     fn is_empty(conn: &Connection) -> bool {
@@ -199,6 +224,10 @@ impl Store {
             status: row.get(3)?,
             agent_id: row.get(4)?,
             created_at: row.get(5)?,
+            planned_for: row.get(6)?,
+            source: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "local".into()),
+            external_id: row.get(8)?,
+            external_url: row.get(9)?,
         })
     }
 
@@ -394,7 +423,13 @@ impl Store {
 
     // --- tasks ---
 
-    pub fn add_task(&self, project_id: &str, title: &str, agent_id: Option<String>) -> Task {
+    pub fn add_task(
+        &self,
+        project_id: &str,
+        title: &str,
+        agent_id: Option<String>,
+        planned_for: Option<String>,
+    ) -> Task {
         let task = Task {
             id: gen_id("task"),
             project_id: project_id.to_string(),
@@ -402,18 +437,24 @@ impl Store {
             status: "todo".into(),
             agent_id,
             created_at: now(),
+            planned_for,
+            source: "local".into(),
+            external_id: None,
+            external_url: None,
         };
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
-            "INSERT INTO tasks (id, project_id, title, status, agent_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO tasks (id, project_id, title, status, agent_id, created_at, planned_for, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 task.id,
                 task.project_id,
                 task.title,
                 task.status,
                 task.agent_id,
-                task.created_at
+                task.created_at,
+                task.planned_for,
+                task.source
             ],
         );
         task
@@ -427,15 +468,41 @@ impl Store {
         );
     }
 
+    /// Re-assign a task to a project ("" = unassigned).
+    pub fn set_task_project(&self, id: &str, project_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE tasks SET project_id = ?1 WHERE id = ?2",
+            params![project_id, id],
+        );
+    }
+
     pub fn delete_task(&self, id: &str) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute("DELETE FROM tasks WHERE id = ?1", params![id]);
     }
 
+    /// Every task across all projects (for the Tasks page).
+    pub fn list_all_tasks(&self) -> Vec<Task> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url
+             FROM tasks ORDER BY created_at DESC, rowid DESC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = match stmt.query_map([], Self::map_task) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
     pub fn list_tasks(&self, project_id: &str) -> Vec<Task> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn.prepare(
-            "SELECT id, project_id, title, status, agent_id, created_at
+            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url
              FROM tasks WHERE project_id = ?1
              ORDER BY created_at ASC, rowid ASC",
         ) {
@@ -481,7 +548,7 @@ mod tests {
         store.set_agent_status(&a.id, "exited");
         assert_eq!(store.get_agent(&a.id).unwrap().status, "exited");
 
-        let t = store.add_task(&p.id, "ship it", Some(a.id.clone()));
+        let t = store.add_task(&p.id, "ship it", Some(a.id.clone()), None);
         store.update_task(&t.id, "doing");
         assert_eq!(store.list_tasks(&p.id)[0].status, "doing");
         store.delete_task(&t.id);

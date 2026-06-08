@@ -18,23 +18,27 @@ export default function ProjectRail({
   activeId,
   homeActive = false,
   workspaceActive = false,
+  tasksActive = false,
   runningByProject,
   waitingProjects,
   onSelect,
   onOpen,
   onHome,
   onWorkspace,
+  onTasks,
 }: {
   projects: Project[];
   activeId: string | null;
   homeActive?: boolean;
   workspaceActive?: boolean;
+  tasksActive?: boolean;
   runningByProject: Record<string, number>;
   waitingProjects: Set<string>;
   onSelect: (p: Project) => void;
   onOpen: () => void;
   onHome: () => void;
   onWorkspace?: () => void;
+  onTasks?: () => void;
 }) {
   return (
     <nav className="prail">
@@ -54,6 +58,16 @@ export default function ProjectRail({
         >
           <GridIcon />
           <span>Workspace</span>
+        </button>
+      )}
+      {onTasks && (
+        <button
+          className={`prail-workspace ${tasksActive ? "active" : ""}`}
+          onClick={onTasks}
+          title="Tasks & daily planning"
+        >
+          <span className="brand-mark">☑</span>
+          <span>Tasks</span>
         </button>
       )}
       <div className="prail-section">Projects</div>

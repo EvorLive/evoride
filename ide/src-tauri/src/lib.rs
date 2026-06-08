@@ -483,19 +483,32 @@ fn list_tasks(store: State<Store>, project_id: String) -> Vec<Task> {
     store.list_tasks(&project_id)
 }
 
+/// Every task across all projects (for the Tasks / planning page).
+#[tauri::command]
+fn all_tasks(store: State<Store>) -> Vec<Task> {
+    store.list_all_tasks()
+}
+
 #[tauri::command]
 fn add_task(
     store: State<Store>,
     project_id: String,
     title: String,
     agent_id: Option<String>,
+    planned_for: Option<String>,
 ) -> Task {
-    store.add_task(&project_id, &title, agent_id)
+    store.add_task(&project_id, &title, agent_id, planned_for)
 }
 
 #[tauri::command]
 fn update_task(store: State<Store>, id: String, status: String) {
     store.update_task(&id, &status)
+}
+
+/// Assign a task to a project ("" = unassigned).
+#[tauri::command]
+fn assign_task(store: State<Store>, id: String, project_id: String) {
+    store.set_task_project(&id, &project_id)
 }
 
 #[tauri::command]
@@ -853,6 +866,8 @@ pub fn run() {
             delete_agent,
             list_tasks,
             add_task,
+            all_tasks,
+            assign_task,
             update_task,
             delete_task,
             read_dir,

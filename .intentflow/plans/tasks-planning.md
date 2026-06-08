@@ -1,6 +1,11 @@
 # Plan: Tasks & daily planning (provider-agnostic)
 
-**Status:** Planned · **Owner:** Rabin · **Tracks roadmap:** "Tasks on the dashboard" + "Jira"
+**Status:** Phase 1 shipped · **Owner:** Rabin · **Tracks roadmap:** "Tasks on the dashboard" + "Jira"
+
+> Phase 1 (2026-06-08): Tasks page (Today/Yesterday/Unassigned) + model extended
+> (nullable project via "", `planned_for`, `source`, `external_id/url`) + quick-add
+> + status cycle + assign-to-project. Rail "Tasks" nav + palette. Phases 2 (agent
+> `EVORIDE_TASKS`) and 3 (Notion/Jira/evor adapters) next.
 
 ## Goal
 A real **Tasks page** for planning your day: today + yesterday with status,

@@ -707,6 +707,141 @@ body {
   min-width: 0;
   background: var(--bg);
 }
+/* --- Tasks / daily planning page --- */
+.tasks-view {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--bg);
+}
+.tasks-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 28px 64px;
+}
+.tk-h1 {
+  margin: 0 0 18px;
+  font-size: 26px;
+  color: var(--fg);
+  letter-spacing: -0.02em;
+}
+.tk-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 26px;
+}
+.tk-add input {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 12px;
+  color: var(--fg);
+  font: inherit;
+}
+.tk-add input:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+.tk-add select,
+.tk-assign {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0 8px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.tk-section {
+  margin-bottom: 26px;
+}
+.tk-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.tk-section-head h2 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-subtle);
+}
+.tk-count {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0 7px;
+}
+.tk-empty {
+  color: var(--fg-subtle);
+  font-size: 13px;
+  margin: 4px 0;
+}
+.tk-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.tk-row.done .tk-title {
+  text-decoration: line-through;
+  color: var(--fg-subtle);
+}
+.tk-dot {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  color: var(--fg-subtle);
+  padding: 0;
+  line-height: 1;
+}
+.tk-dot.doing {
+  color: var(--warn);
+}
+.tk-dot.done {
+  color: var(--live);
+}
+.tk-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 14px;
+}
+.tk-proj {
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  border-radius: 7px;
+  padding: 1px 8px;
+}
+.tk-del {
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 12px;
+}
+.tk-del:hover {
+  opacity: 1;
+}
+
 /* Popped-out single-terminal window. */
 .term-window {
   position: fixed;
