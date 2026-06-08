@@ -574,22 +574,26 @@ async fn daily_summary_ai(
     app: AppHandle,
     store: State<'_, Store>,
     date: Option<String>,
+    force: Option<bool>,
 ) -> Result<String, String> {
     let day = date.filter(|d| !d.trim().is_empty()).unwrap_or_else(summary::today);
+    let force = force.unwrap_or(false);
     let cache_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("summaries");
-    // Already generated today? Return instantly.
-    if let Some(cached) = summary::ai_cached(&cache_dir, &day) {
-        return Ok(cached);
+    // Use the cache unless the user asked to regenerate.
+    if !force {
+        if let Some(cached) = summary::ai_cached(&cache_dir, &day) {
+            return Ok(cached);
+        }
     }
     // Build the activity log synchronously (touches the store), then run the
     // blocking `claude -p` call off the IPC thread so the UI stays responsive.
     let projects = store.list_projects();
     let base = summary::ai_base(&store, &projects, &day);
-    tauri::async_runtime::spawn_blocking(move || summary::ai_generate(&base, &day, &cache_dir))
+    tauri::async_runtime::spawn_blocking(move || summary::ai_generate(&base, &day, &cache_dir, force))
         .await
         .map_err(|e| e.to_string())?
 }

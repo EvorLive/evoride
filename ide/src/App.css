@@ -2355,6 +2355,25 @@ body {
   width: 100%;
   justify-content: flex-start;
 }
+.home-question {
+  font-size: 12.5px;
+  color: var(--fg);
+  font-style: italic;
+  margin-top: 2px;
+}
+.home-day-select {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+}
+.home-day-select:hover {
+  border-color: var(--brand);
+}
 .home-wrow-meta {
   display: flex;
   flex-direction: column;

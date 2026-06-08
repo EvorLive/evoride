@@ -99,8 +99,11 @@ const PROMPT_SIGS: &[&str] = &["(y/n)", "(Y/n)", "(y/N)", "[y/n]", "[Y/n]", "[y/
 
 /// What an agent is blocking on. `options` holds the labels of a numbered
 /// select menu (1-based order); empty for a plain y/n or free-text prompt.
+/// `question` is the prompt text the agent is asking (the line above the menu,
+/// or the y/n question), so the UI can show *what* it wants, not just choices.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PromptInfo {
+    pub question: String,
     pub options: Vec<String>,
 }
 
@@ -135,6 +138,15 @@ fn parse_menu_option(line: &str) -> Option<(u32, String, bool)> {
         return None;
     }
     Some((num, label, had_cursor))
+}
+
+/// Strip leading box-drawing/quote glyphs and collapse whitespace, so a question
+/// line reads as plain prose.
+fn clean_line(s: &str) -> String {
+    let t = s.trim_start_matches(|c: char| {
+        c.is_whitespace() || "│┃|╭╮╰╯─┌┐└┘>•◦*".contains(c)
+    });
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Truncate to `max` chars on a word boundary where possible (no mid-word cuts).
@@ -219,12 +231,24 @@ pub fn detect_prompt(text: &str) -> Option<PromptInfo> {
         // follow); more than that means the menu was answered and scrolled up.
         let near_bottom = last - lowest_opt_line <= 3;
         if contiguous && near_bottom {
+            // The question is the nearest meaningful line above the first option.
+            let first_opt_line = opts.iter().map(|(i, _, _)| *i).min().unwrap_or(0);
+            let question = (0..first_opt_line)
+                .rev()
+                .map(|i| clean_line(lines[i]))
+                .find(|q| {
+                    q.chars().count() > 3
+                        && q.chars().any(|c| c.is_alphabetic())
+                        && parse_menu_option(q).is_none()
+                })
+                .map(|q| truncate_label(&q, 140))
+                .unwrap_or_default();
             let options = opts
                 .into_iter()
                 .take(9)
                 .map(|(_, _, l)| truncate_label(&l, 48))
                 .collect();
-            return Some(PromptInfo { options });
+            return Some(PromptInfo { question, options });
         }
     }
 
@@ -233,7 +257,9 @@ pub fn detect_prompt(text: &str) -> Option<PromptInfo> {
     let from = lines.len().saturating_sub(2);
     let bottom = lines[from..].join("\n");
     if PROMPT_SIGS.iter().any(|s| bottom.contains(s)) {
-        return Some(PromptInfo::default());
+        // Show the question line itself (e.g. "Overwrite the file? (y/n)").
+        let question = truncate_label(&clean_line(lines[last]), 140);
+        return Some(PromptInfo { question, options: Vec::new() });
     }
     None
 }

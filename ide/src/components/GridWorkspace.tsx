@@ -45,6 +45,7 @@ export default function GridWorkspace({
   onResumeToGrid,
   onSpawn,
   onRemoveTile,
+  onAgentInput,
 }: {
   tileIds: string[];
   maxTiles: number;
@@ -71,6 +72,8 @@ export default function GridWorkspace({
   onResumeToGrid: (id: string) => void;
   onSpawn: (projectId: string, command: string, title: string) => void;
   onRemoveTile: (id: string) => void;
+  /** User typed into a tile's terminal (clear its "needs you"). */
+  onAgentInput?: (id: string) => void;
 }) {
   const full = tileIds.length >= maxTiles;
   // Pull overlay is a two-step picker: project first, then agent.
@@ -338,7 +341,7 @@ export default function GridWorkspace({
                 </div>
                 <div className="grid-tile-body">
                   {isLive ? (
-                    <AgentTerminal id={id} active />
+                    <AgentTerminal id={id} active onInput={() => onAgentInput?.(id)} />
                   ) : (
                     // Restored-but-stopped tile: resume its session on demand.
                     <button

@@ -95,6 +95,8 @@ export default function App() {
   const [waitingAgents, setWaitingAgents] = useState<Set<string>>(new Set());
   // Parsed numbered-menu choices per waiting agent (id → option labels).
   const [waitingOptions, setWaitingOptions] = useState<Record<string, string[]>>({});
+  // What each waiting agent is asking (the question/prompt text).
+  const [waitingQuestion, setWaitingQuestion] = useState<Record<string, string>>({});
   // Hidden helper-judge: per-agent classified state + plumbing to run it on idle.
   const [agentState, setAgentState] = useState<Record<string, "working" | "passive" | "active">>({});
   const [hasJudge, setHasJudge] = useState(false);
@@ -442,6 +444,13 @@ export default function App() {
       const { [id]: _drop, ...rest } = prev;
       return rest;
     });
+    setWaitingQuestion((prev) => {
+      if (!(id in prev)) return prev;
+      const { [id]: _drop, ...rest } = prev;
+      return rest;
+    });
+    // The user is responding — reset the idle clock so the judge re-evaluates.
+    lastOutputRef.current[id] = Date.now();
   };
   // Respond to a waiting agent without entering its project.
   const reply = (id: string, data: string) => {
@@ -717,7 +726,7 @@ export default function App() {
   useEffect(() => {
     let un: (() => void) | undefined;
     api
-      .onAgentWaiting((id, waiting, options) => {
+      .onAgentWaiting((id, waiting, options, question) => {
         setWaitingAgents((prev) => {
           const n = new Set(prev);
           if (waiting) n.add(id);
@@ -731,6 +740,14 @@ export default function App() {
             return rest;
           }
           return { ...prev, [id]: options };
+        });
+        setWaitingQuestion((prev) => {
+          if (!waiting || !question) {
+            if (!(id in prev)) return prev;
+            const { [id]: _drop, ...rest } = prev;
+            return rest;
+          }
+          return { ...prev, [id]: question };
         });
       })
       .then((u) => {
@@ -763,7 +780,7 @@ export default function App() {
   // flag: adding misses, clearing false positives, marking passively-idle ones.
   useEffect(() => {
     if (!hasJudge || !judgeEnabled) return;
-    const IDLE_MS = 5000;
+    const IDLE_MS = 3000;
     let busy = false; // one batch in flight at a time
     const applyVerdict = (id: string, j: api.Judgement | null) => {
       if (!j) return;
@@ -780,6 +797,16 @@ export default function App() {
       });
       setWaitingOptions((p) => {
         if (active && j.options.length) return { ...p, [id]: j.options };
+        if (!active && id in p) {
+          const { [id]: _drop, ...rest } = p;
+          return rest;
+        }
+        return p;
+      });
+      // Use the judge's summary as the question when the regex didn't supply one
+      // (e.g. the agent is "asking for direction" with no formal prompt).
+      setWaitingQuestion((p) => {
+        if (active && j.summary && !p[id]) return { ...p, [id]: j.summary };
         if (!active && id in p) {
           const { [id]: _drop, ...rest } = p;
           return rest;
@@ -817,7 +844,7 @@ export default function App() {
           busy = false;
         });
     };
-    const iv = setInterval(tick, 3000);
+    const iv = setInterval(tick, 2000);
     return () => clearInterval(iv);
   }, [hasJudge, judgeEnabled, runningList]);
 
@@ -1054,6 +1081,7 @@ export default function App() {
             runningList={runningList}
             waitingAgents={waitingAgents}
             waitingOptions={waitingOptions}
+            waitingQuestion={waitingQuestion}
             runningByProject={runningByProject}
             waitingProjects={waitingProjects}
             onOpenProject={openProjectFromHome}
@@ -1121,6 +1149,7 @@ export default function App() {
               onResumeToGrid={(id) => void onResumeToGrid(id)}
               onSpawn={(pid, command, title) => void spawnToGrid(pid, command, title)}
               onRemoveTile={removeTile}
+              onAgentInput={clearWaiting}
             />
           </Suspense>
         </div>
@@ -1360,6 +1389,7 @@ export default function App() {
                     key={activeAgentId}
                     id={activeAgentId}
                     active
+                    onInput={() => clearWaiting(activeAgentId)}
                     onUrl={(url) =>
                       setUrlByAgent((prev) =>
                         prev[activeAgentId] === url

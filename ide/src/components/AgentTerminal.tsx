@@ -75,12 +75,15 @@ export default function AgentTerminal({
   active,
   onUrl,
   onIssue,
+  onInput,
 }: {
   id: string;
   active: boolean;
   onUrl?: (url: string) => void;
   /** Fires (with recent output) when a failure signature appears live. */
   onIssue?: (context: string) => void;
+  /** Fires when the user types into this terminal (to clear "needs you"). */
+  onInput?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -89,6 +92,8 @@ export default function AgentTerminal({
   onUrlRef.current = onUrl;
   const onIssueRef = useRef(onIssue);
   onIssueRef.current = onIssue;
+  const onInputRef = useRef(onInput);
+  onInputRef.current = onInput;
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -107,7 +112,10 @@ export default function AgentTerminal({
     termRef.current = term;
     fitRef.current = fit;
 
-    term.onData((data) => void writeInput(id, data));
+    term.onData((data) => {
+      onInputRef.current?.();
+      void writeInput(id, data);
+    });
 
     // Only fit/resize when the tile is actually visible with real width —
     // fitting while hidden (display:none) would size the pty to ~1 column.

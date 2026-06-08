@@ -53,6 +53,8 @@ struct WaitingEvent {
     waiting: bool,
     /// Labels of a numbered select menu (1-based); empty for y/n or free-text.
     options: Vec<String>,
+    /// The question the agent is asking (so the UI shows *what* it wants).
+    question: String,
 }
 
 struct Session {
@@ -136,6 +138,7 @@ impl SessionManager {
             let mut tail = eterm_core::OutputTail::new(8192);
             let mut waiting = false;
             let mut options: Vec<String> = Vec::new();
+            let mut question = String::new();
             // Prompt detection is the per-chunk hot path; during a burst of output
             // (a build, a log dump) re-running it on every 8KB chunk throttles the
             // reader and makes the terminal feel laggy. Rate-limit it — a prompt
@@ -151,20 +154,27 @@ impl SessionManager {
                         tail.push(&buf[..n]);
                         // Detect blocking-on-input transitions (+ parsed menu
                         // choices) for the rail, agent list, and home summary.
-                        if last_detect.elapsed() >= Duration::from_millis(120) {
+                        if last_detect.elapsed() >= Duration::from_millis(80) {
                             last_detect = Instant::now();
                             let info = eterm_core::detect_prompt(tail.text());
                             let now_waiting = info.is_some();
-                            let now_options = info.map(|i| i.options).unwrap_or_default();
-                            if now_waiting != waiting || now_options != options {
+                            let (now_options, now_question) = info
+                                .map(|i| (i.options, i.question))
+                                .unwrap_or_default();
+                            if now_waiting != waiting
+                                || now_options != options
+                                || now_question != question
+                            {
                                 waiting = now_waiting;
                                 options = now_options.clone();
+                                question = now_question.clone();
                                 let _ = ev_app.emit(
                                     "agent-waiting",
                                     WaitingEvent {
                                         id: ev_id.clone(),
                                         waiting,
                                         options: now_options,
+                                        question: now_question,
                                     },
                                 );
                             }
@@ -195,6 +205,7 @@ impl SessionManager {
                     id: ev_id.clone(),
                     waiting: false,
                     options: Vec::new(),
+                    question: String::new(),
                 },
             );
             let _ = ev_app.emit(

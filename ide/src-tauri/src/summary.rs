@@ -121,6 +121,31 @@ fn lines_changed(paths: &[String], date: &str) -> (u64, u64, usize) {
     (add, del, repos)
 }
 
+/// Uncommitted working-tree changes (staged + unstaged vs HEAD) for one repo.
+/// This is what `git log` misses — same-day edits that haven't been committed.
+fn uncommitted_changes(path: &str) -> (u64, u64) {
+    let (mut add, mut del) = (0u64, 0u64);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["diff", "--numstat", "HEAD"])
+        .output();
+    if let Ok(o) = out {
+        if o.status.success() {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                let mut it = line.split('\t');
+                if let (Some(a), Some(d)) = (it.next(), it.next()) {
+                    if let (Ok(a), Ok(d)) = (a.parse::<u64>(), d.parse::<u64>()) {
+                        add += a;
+                        del += d;
+                    }
+                }
+            }
+        }
+    }
+    (add, del)
+}
+
 /// "At a glance" metrics for `date`: projects, lines changed, Claude tokens/usage.
 fn metrics_block(store: &Store, projects: &[Project], date: &str) -> String {
     let mut pids: Vec<String> = store
@@ -142,20 +167,51 @@ fn metrics_block(store: &Store, projects: &[Project], date: &str) -> String {
 
     let (add, del, repos) = lines_changed(&paths, date);
 
+    // For today, also count UNCOMMITTED edits across all known projects — most
+    // same-day work hasn't been committed yet, so git-log alone reads as "0".
+    let is_today = date == today();
+    let (mut uadd, mut udel) = (0u64, 0u64);
+    let mut dirty: Vec<String> = Vec::new();
+    if is_today {
+        for p in projects {
+            let (a, d) = uncommitted_changes(&p.path);
+            if a > 0 || d > 0 {
+                uadd += a;
+                udel += d;
+                dirty.push(p.name.clone());
+            }
+        }
+    }
+
+    // Union of projects worked (agents today) + projects with uncommitted edits.
+    let mut all_names = names.clone();
+    for d in &dirty {
+        if !all_names.contains(d) {
+            all_names.push(d.clone());
+        }
+    }
+
     let mut out = String::from("**At a glance**\n\n");
     out.push_str(&format!(
         "- Projects: {}{}\n",
-        pids.len(),
-        if names.is_empty() {
+        all_names.len().max(pids.len()),
+        if all_names.is_empty() {
             String::new()
         } else {
-            format!(" ({})", names.join(", "))
+            format!(" ({})", all_names.join(", "))
         }
     ));
     out.push_str(&format!(
-        "- Lines changed: +{add} / −{del} across {repos} repo{}\n",
+        "- Lines committed: +{add} / −{del} across {repos} repo{}\n",
         if repos == 1 { "" } else { "s" }
     ));
+    if uadd > 0 || udel > 0 {
+        out.push_str(&format!(
+            "- Uncommitted edits today: +{uadd} / −{udel} in {} ({})\n",
+            dirty.len(),
+            dirty.join(", ")
+        ));
+    }
     if let Some(stats) = claude_day_stats(date) {
         out.push_str(&stats);
     }
@@ -182,20 +238,49 @@ pub fn ai_base(store: &Store, projects: &[Project], date: &str) -> String {
     summary_for(store, projects, date)
 }
 
+/// Delete cached summaries older than `keep_days` (retention for the history).
+fn prune_summaries(cache_dir: &Path, keep_days: i64) {
+    let cutoff = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        civil_date(now - keep_days * 86400)
+    };
+    if let Ok(rd) = std::fs::read_dir(cache_dir) {
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // Filenames are `YYYY-MM-DD-ai.md`; compare the date prefix lexically.
+            if let Some(date) = name.strip_suffix("-ai.md") {
+                if date.len() == 10 && date < cutoff.as_str() {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
 /// Run `claude -p` on the prepared `base` log and cache the result. Pure I/O +
-/// subprocess (no `Store`), so it's safe to call from a blocking thread. Returns
-/// the cached value immediately if present.
-pub fn ai_generate(base: &str, date: &str, cache_dir: &Path) -> Result<String, String> {
+/// subprocess (no `Store`), so it's safe to call from a blocking thread. With
+/// `force`, ignores and overwrites the cache (regenerate after new activity).
+pub fn ai_generate(base: &str, date: &str, cache_dir: &Path, force: bool) -> Result<String, String> {
     let _ = std::fs::create_dir_all(cache_dir);
+    prune_summaries(cache_dir, 30);
     let cache = ai_cache_path(cache_dir, date);
-    if let Some(c) = ai_cached(cache_dir, date) {
-        return Ok(c);
+    if !force {
+        if let Some(c) = ai_cached(cache_dir, date) {
+            return Ok(c);
+        }
     }
     let prompt = format!(
         "Below is a developer's raw activity log for {date}. Write a short, friendly \
-         daily-standup style summary (3–5 sentences): what they worked on, progress made, \
-         and call out the key metrics (projects, lines changed, tokens). Be specific but \
-         concise. Output plain prose, no preamble.\n\n{base}"
+         daily-standup style summary (3–5 sentences): what they worked on and the progress \
+         made. IMPORTANT: treat UNCOMMITTED edits as real work — do NOT say \"nothing \
+         shipped/landed\" if there are uncommitted edits; describe them as work in progress. \
+         If a metric is missing (e.g. the token cache is stale), simply omit it — do not \
+         dwell on what's unavailable. Be specific, accurate, and concise. Output plain \
+         prose, no preamble.\n\n{base}"
     );
     let out = Command::new("claude")
         .args(["-p", &prompt])

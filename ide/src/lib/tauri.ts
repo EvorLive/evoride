@@ -88,13 +88,14 @@ export const runningAgents = () => invoke<AgentRecord[]>("running_agents");
 export const allAgents = () => invoke<AgentRecord[]>("all_agents");
 
 /// Global listener: an agent started/stopped waiting for user input.
-/// `options` holds the labels of a numbered select menu (empty for y/n / free text).
+/// `options` holds menu labels (empty for y/n); `question` is what it's asking.
 export async function onAgentWaiting(
-  cb: (id: string, waiting: boolean, options: string[]) => void,
+  cb: (id: string, waiting: boolean, options: string[], question: string) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ id: string; waiting: boolean; options?: string[] }>(
+  return listen<{ id: string; waiting: boolean; options?: string[]; question?: string }>(
     "agent-waiting",
-    (ev) => cb(ev.payload.id, ev.payload.waiting, ev.payload.options ?? []),
+    (ev) =>
+      cb(ev.payload.id, ev.payload.waiting, ev.payload.options ?? [], ev.payload.question ?? ""),
   );
 }
 
@@ -214,8 +215,8 @@ export const setDailySummary = (enabled: boolean) =>
   invoke<Settings>("set_daily_summary", { enabled });
 export const dailySummary = (date?: string) =>
   invoke<string>("daily_summary", { date });
-export const dailySummaryAi = (date?: string) =>
-  invoke<string>("daily_summary_ai", { date });
+export const dailySummaryAi = (date?: string, force?: boolean) =>
+  invoke<string>("daily_summary_ai", { date, force });
 /// Previously-generated AI summary for the day, if cached (no LLM call).
 export const dailySummaryAiCached = (date?: string) =>
   invoke<string | null>("daily_summary_ai_cached", { date });

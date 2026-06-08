@@ -95,8 +95,10 @@ compact JSON and NOTHING else:\n\
 Definitions:\n\
 - working: still running a task or producing output; no user action needed.\n\
 - waiting_passive: idle at its normal input box; the user MAY type but nothing is required.\n\
-- waiting_active: blocking on a question, permission prompt, or numbered menu that \
-needs the user NOW. If there are explicit choices, list their labels in \"options\".\n\
+- waiting_active: needs the user NOW — blocking on a question, permission prompt, \
+or numbered menu, OR the agent has finished/stalled and is asking what to do next \
+or for direction (even without a formal prompt). Put the question or what it's \
+asking in \"summary\", and any explicit choices in \"options\".\n\
 Terminal tail:\n<<<\n{tail}\n>>>"
     )
 }
@@ -171,8 +173,9 @@ exactly N objects, in the SAME ORDER as the agents, each object:\n\
 Definitions:\n\
 - working: still running a task or producing output; no user action needed.\n\
 - waiting_passive: idle at its normal input box; nothing required.\n\
-- waiting_active: blocking on a question/permission/menu that needs the user NOW \
-(put any explicit choices in \"options\").\n\n",
+- waiting_active: needs the user NOW — blocking on a question/permission/menu, OR \
+the agent finished/stalled and is asking what to do next / for direction. Put what \
+it's asking in \"summary\" and any explicit choices in \"options\".\n\n",
     );
     for (i, (_, tail)) in items.iter().enumerate() {
         p.push_str(&format!("Agent {} tail:\n<<<\n{}\n>>>\n\n", i + 1, tail));

@@ -42,6 +42,7 @@ export default function HomeView({
   runningList,
   waitingAgents,
   waitingOptions,
+  waitingQuestion,
   runningByProject,
   waitingProjects,
   onOpenProject,
@@ -56,6 +57,8 @@ export default function HomeView({
   waitingAgents: Set<string>;
   /** Parsed numbered-menu choices per waiting agent id (empty for y/n). */
   waitingOptions: Record<string, string[]>;
+  /** What each waiting agent is asking. */
+  waitingQuestion: Record<string, string>;
   runningByProject: Record<string, number>;
   waitingProjects: Set<string>;
   onOpenProject: (p: Project) => void;
@@ -70,17 +73,26 @@ export default function HomeView({
   const [aiSummary, setAiSummary] = useState<string>("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  // Selected day for the summary ("" = today) + the list of days with activity.
+  const [day, setDay] = useState<string>("");
+  const [days, setDays] = useState<string[]>([]);
 
-  // Show the previously-generated summary on (re)open — no need to click again.
   useEffect(() => {
-    api.dailySummaryAiCached().then((c) => c && setAiSummary(c)).catch(() => {});
-  }, []);
+    api.summaryDates().then(setDays).catch(() => {});
+  }, [runningList.length]);
 
-  const generateAi = () => {
+  // Load the cached AI summary for the selected day (no LLM call).
+  useEffect(() => {
+    setAiSummary("");
+    setAiError(null);
+    api.dailySummaryAiCached(day || undefined).then((c) => c && setAiSummary(c)).catch(() => {});
+  }, [day]);
+
+  const generateAi = (force = false) => {
     setAiBusy(true);
     setAiError(null);
     api
-      .dailySummaryAi()
+      .dailySummaryAi(day || undefined, force)
       .then(setAiSummary)
       .catch((e) => setAiError(String(e)))
       .finally(() => setAiBusy(false));
@@ -96,8 +108,8 @@ export default function HomeView({
   }, []);
 
   const refreshSummary = useCallback(() => {
-    api.dailySummary().then(setSummary).catch(() => setSummary(""));
-  }, []);
+    api.dailySummary(day || undefined).then(setSummary).catch(() => setSummary(""));
+  }, [day]);
   useEffect(() => {
     refreshSummary();
   }, [refreshSummary, runningList.length]);
@@ -141,11 +153,13 @@ export default function HomeView({
             <ul className="home-rows">
               {waitingList.map((a) => {
                 const opts = waitingOptions[a.id] ?? [];
+                const question = waitingQuestion[a.id];
                 return (
-                  <li key={a.id} className={`home-wrow ${opts.length > 0 ? "menu" : ""}`}>
+                  <li key={a.id} className={`home-wrow ${opts.length > 0 || question ? "menu" : ""}`}>
                     <div className="home-wrow-meta">
                       <span className="home-title">{a.title}</span>
                       <span className="home-proj">{projectName(a.project_id)}</span>
+                      {question && <span className="home-question">“{question}”</span>}
                     </div>
                     {opts.length > 0 ? (
                       // A numbered select menu — offer its actual choices.
@@ -256,11 +270,31 @@ export default function HomeView({
 
         <section className="home-section">
           <div className="home-today-head">
-            <h2 className="home-h2">Today</h2>
+            <h2 className="home-h2">{day ? day : "Today"}</h2>
             <div className="home-today-actions">
+              <select
+                className="home-day-select"
+                value={day}
+                onChange={(e) => setDay(e.target.value)}
+                title="View a past day (last 30 days kept)"
+              >
+                <option value="">Today</option>
+                {days
+                  .filter((d) => d !== new Date().toISOString().slice(0, 10))
+                  .map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+              </select>
               {dailyOn && (
-                <button className="btn-ghost" onClick={generateAi} disabled={aiBusy}>
-                  {aiBusy ? "Summarizing…" : "✨ Summarize with Claude"}
+                <button
+                  className="btn-ghost"
+                  onClick={() => generateAi(!!aiSummary)}
+                  disabled={aiBusy}
+                  title={aiSummary ? "Regenerate with the latest activity" : "Generate a summary"}
+                >
+                  {aiBusy ? "Summarizing…" : aiSummary ? "↻ Regenerate" : "✨ Summarize with Claude"}
                 </button>
               )}
               <label className="home-toggle" title="Generate a daily activity summary">
