@@ -33,6 +33,18 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuild
 #[derive(Default)]
 struct GitLock(Mutex<()>);
 
+/// Per-agent cache of the last judged (tail-hash → verdict), so an agent whose
+/// output hasn't changed isn't re-sent to the LLM — pure repeated work.
+#[derive(Default)]
+struct JudgeCache(Mutex<std::collections::HashMap<String, (u64, judge::Judgement)>>);
+
+fn hash_tail(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
 static WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Open another IDE window in the same process. State (Store, ptys) is shared,
@@ -297,10 +309,11 @@ struct JudgeResult {
 #[tauri::command]
 async fn judge_agents(
     manager: State<'_, SessionManager>,
+    cache: State<'_, JudgeCache>,
     ids: Vec<String>,
 ) -> Result<Vec<JudgeResult>, String> {
-    // Snapshot each agent's tail synchronously (kept short to bound prompt size).
-    let items: Vec<(String, String)> = ids
+    // Snapshot each agent's tail + a content hash (kept short to bound prompt size).
+    let items: Vec<(String, String, u64)> = ids
         .iter()
         .map(|id| {
             let stripped = eterm_core::strip_ansi(&manager.scrollback(id));
@@ -308,17 +321,47 @@ async fn judge_agents(
             let from = (from..=stripped.len())
                 .find(|&i| stripped.is_char_boundary(i))
                 .unwrap_or(0);
-            (id.clone(), stripped[from..].to_string())
+            let tail = stripped[from..].to_string();
+            let hash = hash_tail(&tail);
+            (id.clone(), tail, hash)
         })
         .collect();
-    let verdicts = tauri::async_runtime::spawn_blocking(move || judge::classify_batch(&items))
+
+    // Split: agents whose tail is unchanged since last judge reuse the cached
+    // verdict (no LLM call); only changed ones are sent to the batch.
+    let mut results: Vec<JudgeResult> = Vec::new();
+    let mut to_judge: Vec<(String, String)> = Vec::new();
+    {
+        let c = cache.0.lock().unwrap();
+        for (id, tail, hash) in &items {
+            match c.get(id) {
+                Some((h, j)) if h == hash => {
+                    results.push(JudgeResult { id: id.clone(), judgement: Some(j.clone()) });
+                }
+                _ => to_judge.push((id.clone(), tail.clone())),
+            }
+        }
+    }
+    if to_judge.is_empty() {
+        return Ok(results);
+    }
+
+    let batch = to_judge.clone();
+    let verdicts = tauri::async_runtime::spawn_blocking(move || judge::classify_batch(&batch))
         .await
         .map_err(|e| e.to_string())?;
-    Ok(ids
-        .into_iter()
-        .zip(verdicts)
-        .map(|(id, judgement)| JudgeResult { id, judgement })
-        .collect())
+
+    // Cache fresh verdicts by their tail hash so the next unchanged call is free.
+    let mut c = cache.0.lock().unwrap();
+    for ((id, _), judgement) in to_judge.into_iter().zip(verdicts) {
+        if let Some(j) = &judgement {
+            if let Some((_, _, hash)) = items.iter().find(|(i, _, _)| *i == id) {
+                c.insert(id.clone(), (*hash, j.clone()));
+            }
+        }
+        results.push(JudgeResult { id, judgement });
+    }
+    Ok(results)
 }
 
 /// Name of the available judge helper (e.g. "claude"), or `None`.
@@ -644,6 +687,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(SessionManager::new())
         .manage(GitLock::default())
+        .manage(JudgeCache::default())
         .setup(|app| {
             let dir = app
                 .path()
