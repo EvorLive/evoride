@@ -12,6 +12,12 @@ from one window. Keep the **why** of your code next to the **what**.
 > ⚠️ **Early / alpha.** Actively built in the open. Things move fast and break.
 > Issues, ideas, and PRs are very welcome — this is meant to grow with its community.
 
+<br />
+
+<img src="docs/screenshot.png" alt="EvorIDE dashboard — see which agents need your input across all your projects" width="900" />
+
+<sub>The Home dashboard: which agents are <strong>waiting on you</strong> (with the actual question + one-click replies), what's running, and a daily recap — across every project.</sub>
+
 </div>
 
 ---
