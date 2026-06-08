@@ -522,13 +522,20 @@ fn git_create_branch(lock: State<GitLock>, cwd: String, name: String) -> Result<
 // --- run config ---
 
 #[tauri::command]
-fn run_config(path: String) -> Vec<Service> {
-    run::read_config(&path)
+fn run_config(project_id: String, path: String) -> Vec<Service> {
+    run::services_for(&project_id, &path)
 }
 
 #[tauri::command]
 fn create_run_config(path: String) -> Result<Vec<Service>, String> {
     run::create_config(&path)
+}
+
+/// The instruction to hand an agent so it generates the project's run config at
+/// `~/.evoride/{project_id}/runinfo.json` (used by the "Set up run with AI" flow).
+#[tauri::command]
+fn run_setup_prompt(project_id: String) -> String {
+    run::setup_instruction(&project_id)
 }
 
 // --- intent docs ---
@@ -779,6 +786,7 @@ pub fn run() {
             git_pull,
             git_push,
             run_config,
+            run_setup_prompt,
             create_run_config,
             intent_config,
             set_intent,

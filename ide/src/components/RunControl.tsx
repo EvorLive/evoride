@@ -9,22 +9,29 @@ export default function RunControl({
   onStart,
   onStop,
   onCreateConfig,
+  onSetupAi,
 }: {
   services: Service[];
   running: Record<string, boolean>;
   onStart: (s: Service) => void;
   onStop: (s: Service) => void;
   onCreateConfig: () => void;
+  onSetupAi: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const isRunning = (s: Service) => !!running[s.name];
 
   if (services.length <= 1) {
     const s = services[0];
-    if (!s) {
+    if (!s || !s.command.trim()) {
+      // No runnable command detected → offer AI setup (writes runinfo.json).
       return (
-        <button className="btn-sm primary" disabled title="No run command">
-          ▷ Run
+        <button
+          className="btn-sm primary"
+          onClick={onSetupAi}
+          title="Let an agent figure out how to run this (Docker, monorepo, custom) and configure it"
+        >
+          ✨ Set up run
         </button>
       );
     }
@@ -84,6 +91,9 @@ export default function RunControl({
           </button>
           <button className="run-all" onClick={onCreateConfig}>
             ⚙ Refresh run config
+          </button>
+          <button className="run-all" onClick={onSetupAi}>
+            ✨ Set up run with AI
           </button>
         </div>
       )}

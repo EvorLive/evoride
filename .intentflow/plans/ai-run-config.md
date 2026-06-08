@@ -1,6 +1,13 @@
 # Plan: AI-generated run configuration
 
-**Status:** Planned · **Owner:** Rabin · **Tracks roadmap item:** "AI run setup"
+**Status:** Implemented (v1) · **Owner:** Rabin · **Tracks roadmap item:** "AI run setup"
+
+> v1 shipped 2026-06-08: backend `runinfo` read/precedence + `Service` port/url/
+> ready_when + `run_setup_prompt`; `RunControl` "✨ Set up run" → spawns an agent
+> with the instruction → polls for `runinfo.json` → loads + auto-runs. The agent
+> also appends a `.intentflow/timeline.md` entry. Remaining: use `port`/`url`/
+> `ready_when` for the Open-URL + ready detection; end-to-end GUI test on a real
+> Docker project.
 
 ## Problem
 `Run` only handles projects it can auto-detect or that ship a committed

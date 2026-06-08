@@ -252,7 +252,7 @@ export default function App() {
     refreshAgents(project.id);
     api.listTasks(project.id).then(setTasks).catch(() => {});
     api.claudeSessions(project.path).then(setSessions).catch(() => {});
-    api.runConfig(project.path).then(setServices).catch(() => setServices([]));
+    api.runConfig(project.id, project.path).then(setServices).catch(() => setServices([]));
     api.intentConfig(project.path).then((c) => setIntentEnabled(c.enabled)).catch(() => {});
     setOpenFiles([]);
     setActiveFile(null);
@@ -643,6 +643,34 @@ export default function App() {
     if (!project) return;
     const svcs = await api.createRunConfig(project.path).catch(() => null);
     if (svcs) setServices(svcs);
+  };
+  // "Set up run with AI": spawn a Claude agent, hand it the instruction to write
+  // ~/.evoride/{id}/runinfo.json, then poll for the result, load it, and run it.
+  const setupRunWithAI = async () => {
+    if (!project) return;
+    const pid = project.id;
+    const prompt = await api.runSetupPrompt(pid).catch(() => null);
+    if (!prompt) return;
+    const before = JSON.stringify(services); // so we only react to the NEW config
+    const rec = await launch({ title: "Set up run", command: "claude" });
+    if (!rec) return;
+    // Give the agent a moment to come up, then send the (single-line) instruction.
+    window.setTimeout(() => void api.writeInput(rec.id, `${prompt}\r`), 1800);
+    // Watch for the generated config; once it lands (differs from before), load +
+    // auto-run it — "run after you complete it".
+    let tries = 0;
+    const iv = window.setInterval(async () => {
+      tries += 1;
+      const svcs = await api.runConfig(pid, project.path).catch(() => [] as typeof services);
+      const ready = svcs.filter((s) => s.command.trim());
+      if (ready.length && JSON.stringify(svcs) !== before) {
+        window.clearInterval(iv);
+        setServices(svcs);
+        ready.forEach((s) => void startService(s)); // run after it completes
+      } else if (tries > 90) {
+        window.clearInterval(iv); // ~3 min cap
+      }
+    }, 2000);
   };
 
   // Ask the active (live) agent to commit & push by typing an instruction.
@@ -1341,6 +1369,7 @@ export default function App() {
                 onStart={startService}
                 onStop={stopService}
                 onCreateConfig={refreshRunConfig}
+                onSetupAi={setupRunWithAI}
               />
               <button
                 className="btn-sm icon"

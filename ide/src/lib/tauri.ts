@@ -177,10 +177,17 @@ export interface Service {
   name: string;
   command: string;
   cwd: string;
+  port?: number;
+  url?: string;
+  ready_when?: string;
 }
-export const runConfig = (path: string) => invoke<Service[]>("run_config", { path });
+export const runConfig = (projectId: string, path: string) =>
+  invoke<Service[]>("run_config", { projectId, path });
 export const createRunConfig = (path: string) =>
   invoke<Service[]>("create_run_config", { path });
+/// Instruction to hand an agent so it writes ~/.evoride/{id}/runinfo.json.
+export const runSetupPrompt = (projectId: string) =>
+  invoke<string>("run_setup_prompt", { projectId });
 
 // --- intent docs ---
 export interface IntentConfig {
