@@ -173,9 +173,14 @@ data-driven/user-configurable. See the [roadmap](#roadmap).
 ## Roadmap
 
 Built ✅ · Coming up 🚧 · Planned ⬜ — **contributions especially welcome on the planned items.**
+The full tracked plan lives in the repo: [`.intentflow/roadmap.md`](.intentflow/roadmap.md).
 
 - ✅ Multi-project, multi-agent, run/stop, git, intent docs, fix-this-issue, edit tracking,
   themes, terminal discarding, waiting-for-input detection, command palette (⌘P / ⌘⇧P)
+- 🚧 **AI run setup** — when a project's run isn't detected (Docker, monorepos, custom
+  toolchains), an agent analyzes it and generates a run config at
+  `~/.evoride/{project}/runinfo.json` that EvorIDE uses to start it.
+  → [plan](.intentflow/plans/ai-run-config.md)
 - 🚧 **Persistent agents** — agents survive the IDE crashing *or* closing and re-attach on
   reopen (tmux/screen-backed), so long runs aren't lost. *(coming up)*
 - 🚧 **Remote control for the IDE** — drive your running IDE and its agents from the web
@@ -185,6 +190,14 @@ Built ✅ · Coming up 🚧 · Planned ⬜ — **contributions especially welcom
   terminal stack), with mouse text **selection & highlight**, **search**, copy/paste,
   clickable URLs, themes, and GPU-fast rendering — the niceties of a best-in-class macOS
   terminal, plus eterm-core's built-in agent/error/prompt smarts. *(coming up)*
+- ⬜ **Cross-terminal notifications** — OS notification + in-app toast when a background or
+  other-window agent starts waiting, so you don't have to go back to find it
+- ⬜ **Open from Git** — clone a repo URL and open it directly as a project
+- ⬜ **Tasks on the dashboard** — per-project tasks surfaced (cross-project) on Home
+- ⬜ **Cross-project memory** — let Claude reference another workspace project's intent docs
+  + summary + edits as context
+- ⬜ **Jira integration** — two-way sync between Jira issues and tasks
+- ⬜ **Reminders** — manage reminders in the IDE with due-time notifications
 - ⬜ **Per-project permission profiles** — "ask / guarded allow-all / YOLO" per project with
   a deny-list for destructive ops, and a default agent (claude/codex) per project
 - ⬜ **Embedding / semantic code search** as a plugin (e.g. local Ollama + Milvus via an MCP
