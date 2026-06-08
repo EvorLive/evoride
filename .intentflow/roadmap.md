@@ -15,7 +15,9 @@ any IDE opening this project sees them. Status: ✅ done · 🚧 in progress ·
 - ⬜ **Cross-terminal notifications** — OS notification + in-app toast when a
   background/other-window agent starts waiting (`tauri-plugin-notification`).
 - ⬜ **Open from Git** — clone a repo URL and open it as a project.
-- ⬜ **Tasks on the dashboard** — surface per-project tasks (cross-project) on Home.
+- ⬜ **Tasks & daily planning** — a Tasks page (today/yesterday/unassigned), agents
+  create tasks per project (Unassigned when not relatable), provider-agnostic for
+  Notion/Jira/evor.live sync. → [plan](plans/tasks-planning.md)
 
 ## Bigger bets
 - ⬜ **Cross-project memory in Claude** — reference another workspace project's
