@@ -219,7 +219,13 @@ fn run_cmd(mgr: &str, script: &str) -> String {
 pub fn detect_run_command(path: &str) -> Option<String> {
     let p = Path::new(path);
 
-    if p.join("Cargo.toml").exists() {
+    if let Ok(cargo) = std::fs::read_to_string(p.join("Cargo.toml")) {
+        // Bare `cargo run` only works for a runnable crate. A pure workspace
+        // ([workspace] with no [package]) is ambiguous — leave it unconfigured so
+        // "✨ Set up run" picks the right `cargo run -p <crate>` per app.
+        if cargo.contains("[workspace]") && !cargo.contains("[package]") {
+            return None;
+        }
         return Some("cargo run".into());
     }
 
@@ -307,6 +313,16 @@ mod tests {
     #[test]
     fn none_when_unknown() {
         let d = tmpdir("empty");
+        assert_eq!(detect_run_command(d.to_str().unwrap()), None);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn pure_cargo_workspace_is_not_runnable() {
+        // [workspace] with no [package] → bare `cargo run` is ambiguous → None,
+        // so "Set up run" takes over instead of a failing run.
+        let d = tmpdir("cargo-ws");
+        std::fs::write(d.join("Cargo.toml"), "[workspace]\nmembers = [\"a\", \"b\"]").unwrap();
         assert_eq!(detect_run_command(d.to_str().unwrap()), None);
         let _ = std::fs::remove_dir_all(d);
     }
