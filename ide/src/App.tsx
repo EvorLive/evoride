@@ -1118,11 +1118,35 @@ export default function App() {
     return (
       <div className="ide">
         <div className="welcome">
-          <h1>EvorIDE</h1>
-          <p>Open a project folder to start running agents.</p>
-          <button className="btn" onClick={openFolder}>
-            Open folder
-          </button>
+          <div className="welcome-card">
+            <h1 className="welcome-title">Welcome to EvorIDE</h1>
+            <p className="welcome-lead">
+              Run many coding agents at once — and always know which one needs you.
+            </p>
+            <ol className="welcome-steps">
+              <li>
+                <b>Open a project</b>, then launch <b>Claude</b>, <b>Codex</b>, or any CLI agent
+                right inside it.
+              </li>
+              <li>
+                <b>Run several at once</b> across projects — the left rail shows which agents are
+                working and which are <b>waiting on you</b>.
+              </li>
+              <li>
+                When an agent needs a decision, see the <b>actual question</b> and <b>reply in one
+                click</b> — no hunting through terminals.
+              </li>
+              <li>
+                <b>Git, run/stop, a file editor, and a command palette (⌘P)</b> are all built in.
+              </li>
+            </ol>
+            <div className="welcome-actions">
+              <button className="btn primary" onClick={openFolder}>
+                Open a project
+              </button>
+              <span className="welcome-tip">Tip: press ⌘P anytime to jump around.</span>
+            </div>
+          </div>
         </div>
         {palette}
       </div>
