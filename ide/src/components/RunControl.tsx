@@ -35,18 +35,21 @@ export default function RunControl({
         </button>
       );
     }
-    return isRunning(s) ? (
-      <button className="btn-sm stop" onClick={() => onStop(s)} title={s.command}>
-        ■ Stop
-      </button>
-    ) : (
-      <button
-        className="btn-sm primary"
-        onClick={() => onStart(s)}
-        title={s.command || "$SHELL"}
-      >
-        ▷ Run
-      </button>
+    return (
+      <span className="run-single">
+        {isRunning(s) ? (
+          <button className="btn-sm stop" onClick={() => onStop(s)} title={s.command}>
+            ■ Stop
+          </button>
+        ) : (
+          <button className="btn-sm primary" onClick={() => onStart(s)} title={s.command || "$SHELL"}>
+            ▷ Run
+          </button>
+        )}
+        <button className="btn-sm icon" onClick={onSetupAi} title="Regenerate run config with AI">
+          ✨
+        </button>
+      </span>
     );
   }
 

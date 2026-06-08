@@ -7,6 +7,7 @@ import StatusBar from "./components/StatusBar";
 import HomeView from "./components/HomeView";
 import HomeBar from "./components/HomeBar";
 import SettingsDialog from "./components/SettingsDialog";
+import RunSetupDialog from "./components/RunSetupDialog";
 import CommandPalette, { type Command } from "./components/CommandPalette";
 import { loadAgents, saveAgents, enabledClis, type AgentConfig } from "./lib/agents";
 import * as demo from "./lib/demo";
@@ -644,15 +645,21 @@ export default function App() {
     const svcs = await api.createRunConfig(project.path).catch(() => null);
     if (svcs) setServices(svcs);
   };
-  // "Set up run with AI": spawn a Claude agent, hand it the instruction to write
-  // ~/.evoride/{id}/runinfo.json, then poll for the result, load it, and run it.
-  const setupRunWithAI = async () => {
+  const [runSetupOpen, setRunSetupOpen] = useState(false);
+  // "Set up / regenerate run with AI": spawn the CHOSEN agent, hand it the
+  // instruction (+ any extra prompt) to write ~/.evoride/{id}/runinfo.json —
+  // multi-service for a monorepo — then poll, load, and run it. The agent stays
+  // a live chat session you can keep directing.
+  const runGenerate = async (command: string, extra: string) => {
     if (!project) return;
     const pid = project.id;
-    const prompt = await api.runSetupPrompt(pid).catch(() => null);
-    if (!prompt) return;
+    const base = await api.runSetupPrompt(pid).catch(() => null);
+    if (!base) return;
+    // Keep it one prompt: flatten the user's extra to a single appended line.
+    const prompt = extra ? `${base} Also: ${extra.replace(/\s+/g, " ").trim()}` : base;
+    const label = enabledAgentClis.find((c) => c.command === command)?.label ?? "agent";
     const before = JSON.stringify(services); // so we only react to the NEW config
-    const rec = await launch({ title: "Set up run", command: "claude" });
+    const rec = await launch({ title: `Set up run · ${label}`, command });
     if (!rec) return;
     // Give the agent a moment to come up, then send the (single-line) instruction.
     window.setTimeout(() => void api.writeInput(rec.id, `${prompt}\r`), 1800);
@@ -1110,6 +1117,16 @@ export default function App() {
         agents={agentConfigs}
         setAgents={setAgentConfigs}
       />
+      <RunSetupDialog
+        open={runSetupOpen}
+        onClose={() => setRunSetupOpen(false)}
+        clis={enabledAgentClis}
+        regenerate={services.some((s) => s.command.trim())}
+        onGenerate={(command, extra) => {
+          setRunSetupOpen(false);
+          void runGenerate(command, extra);
+        }}
+      />
     </>
   );
 
@@ -1393,7 +1410,7 @@ export default function App() {
                 onStart={startService}
                 onStop={stopService}
                 onCreateConfig={refreshRunConfig}
-                onSetupAi={setupRunWithAI}
+                onSetupAi={() => setRunSetupOpen(true)}
               />
               <button
                 className="btn-sm icon"

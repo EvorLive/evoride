@@ -52,16 +52,19 @@ pub fn setup_instruction(project_id: &str) -> String {
         .unwrap_or_default();
     format!(
         "EvorIDE: figure out how to RUN this project for local development. Inspect \
-package.json scripts, Cargo.toml, Dockerfile / docker-compose.yml, Makefile, Procfile, \
-etc. Prefer Docker if a compose file defines the dev stack; verify required tools exist \
-(e.g. run `which docker`). Then WRITE the run config as JSON to `{runinfo}` (create the \
-directory) with this exact shape: {{\"generated_by\":\"<your model>\",\"services\":[{{\
-\"name\":\"web\",\"command\":\"<exact shell command to start it>\",\"cwd\":\"<dir relative \
-to project root, empty string for root>\",\"port\":3000,\"url\":\"http://localhost:3000\",\
-\"ready_when\":\"<optional regex matching a ready line in the output>\"}}],\"notes\":\
-\"<anything I should know, e.g. needs Docker running>\"}}. Use real, runnable commands. If \
-`.intentflow/timeline.md` exists, append a one-line dated entry noting you configured the \
-run (credit the model). Finally, summarize what you set up."
+package.json scripts (+ workspaces / pnpm-workspace.yaml), Cargo.toml, Dockerfile / \
+docker-compose.yml, Makefile, Procfile, etc. Prefer Docker if a compose file defines the \
+dev stack; verify required tools exist (e.g. run `which docker`). IMPORTANT: if this is a \
+MONOREPO with several runnable apps/services, include ONE entry per app in `services` \
+(e.g. 4 apps -> 4 entries), each with its own name, command, cwd, and port/url. Then WRITE \
+the run config as JSON to `{runinfo}` (create the directory) with this exact shape: {{\
+\"generated_by\":\"<your model>\",\"services\":[{{\"name\":\"web\",\"command\":\"<exact \
+shell command to start it>\",\"cwd\":\"<dir relative to project root, empty string for \
+root>\",\"port\":3000,\"url\":\"http://localhost:3000\",\"ready_when\":\"<optional regex \
+matching a ready line in the output>\"}}],\"notes\":\"<anything I should know, e.g. needs \
+Docker running>\"}}. Use real, runnable commands. If `.intentflow/timeline.md` exists, \
+append a one-line dated entry noting you configured the run (credit the model). Finally, \
+summarize what you set up — then I may give you more to do, so stay ready."
     )
 }
 
