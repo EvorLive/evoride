@@ -82,7 +82,7 @@ jobs:
         with:
           projectPath: ide
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', github.run_number) }}
-          releaseName: "EvorIde ${{ github.ref_type == 'tag' && github.ref_name || github.run_number }}"
+          releaseName: "EvorIDE ${{ github.ref_type == 'tag' && github.ref_name || github.run_number }}"
           releaseBody: "Download the installer for your OS below. See the docs to get started."
           releaseDraft: true
           prerelease: false

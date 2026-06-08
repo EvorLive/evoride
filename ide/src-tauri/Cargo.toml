@@ -28,3 +28,10 @@ base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 eterm-core = { path = "../../core" }
 
+
+# Faster dev rebuilds: full debuginfo (debug=2) makes the link step of this
+# large Tauri binary slow. Line tables keep usable backtraces while cutting
+# link time and binary size noticeably. The bundled SQLite compiles once and is
+# cached, so it only affects the first/clean build, not the edit-rebuild loop.
+[profile.dev]
+debug = "line-tables-only"

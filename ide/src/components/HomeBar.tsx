@@ -1,20 +1,19 @@
-const APP_VERSION = "0.1.0";
-
 // Bottom bar for context where there's no active project (Home / Workspace grid).
 // Shows only what makes sense there — counts, the evor.live connection, the
 // command-palette hint, and the theme toggle — not git/branch/agent details.
 export default function HomeBar({
+  version,
   projectCount,
   runningCount,
   waitingCount,
   evorConnected = false,
   onConnectEvor,
   onOpenPalette,
-  pinned = false,
-  onTogglePin,
+  onOpenSettings,
   theme,
   onCycleTheme,
 }: {
+  version: string;
   projectCount: number;
   runningCount: number;
   waitingCount: number;
@@ -22,9 +21,7 @@ export default function HomeBar({
   evorConnected?: boolean;
   onConnectEvor?: () => void;
   onOpenPalette?: () => void;
-  /** "Stick out" — window floats above other apps. */
-  pinned?: boolean;
-  onTogglePin?: () => void;
+  onOpenSettings?: () => void;
   theme: "system" | "light" | "dark";
   onCycleTheme: () => void;
 }) {
@@ -33,7 +30,7 @@ export default function HomeBar({
   return (
     <footer className="statusbar homebar">
       <div className="status-left">
-        <span className="status-ver">EvorIde v{APP_VERSION}</span>
+        <span className="status-ver">EvorIDE{version ? ` v${version}` : ""}</span>
         <span className="hb-stat" title="Known projects">
           {projectCount} project{projectCount === 1 ? "" : "s"}
         </span>
@@ -53,15 +50,6 @@ export default function HomeBar({
         {onOpenPalette && (
           <button className="status-theme" onClick={onOpenPalette} title="Command palette">
             ⌘P
-          </button>
-        )}
-        {onTogglePin && (
-          <button
-            className={`status-theme ${pinned ? "on" : ""}`}
-            onClick={onTogglePin}
-            title={pinned ? "Stuck out (always on top) — click to unstick" : "Stick out (always on top)"}
-          >
-            📌 {pinned ? "stuck" : "stick out"}
           </button>
         )}
         <button
@@ -84,6 +72,11 @@ export default function HomeBar({
         >
           {themeIcon} {theme}
         </button>
+        {onOpenSettings && (
+          <button className="status-theme" onClick={onOpenSettings} title="Settings (⌘,)">
+            ⚙
+          </button>
+        )}
       </div>
     </footer>
   );

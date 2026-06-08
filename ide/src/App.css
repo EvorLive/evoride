@@ -2925,6 +2925,144 @@ body {
   gap: 8px;
 }
 
+/* --- settings / preferences dialog --- */
+.set-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 9vh;
+}
+.set-modal {
+  width: 560px;
+  max-width: 94vw;
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.set-head {
+  display: flex;
+  align-items: center;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.set-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.set-x {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  font-size: 14px;
+}
+.set-x:hover {
+  color: var(--fg);
+}
+.set-body {
+  overflow-y: auto;
+  padding: 8px 16px 16px;
+}
+.set-section {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.set-section:last-child {
+  border-bottom: none;
+}
+.set-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-subtle);
+  margin-bottom: 8px;
+}
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+}
+.set-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.set-row-label {
+  font-size: 13px;
+  color: var(--fg);
+}
+.set-row-hint {
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.set-switch {
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--surface-2, var(--bg));
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.set-switch.on {
+  background: var(--brand);
+  border-color: transparent;
+}
+.set-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.set-switch.on .set-knob {
+  transform: translateX(16px);
+}
+.set-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.set-seg-btn {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 5px 12px;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+.set-seg-btn.on {
+  background: color-mix(in srgb, var(--brand) 16%, var(--surface));
+  color: var(--fg);
+}
+.set-about {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 /* --- pull-agent overlay (project → agent) --- */
 .pull-overlay {
   position: fixed;

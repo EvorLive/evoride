@@ -2,7 +2,7 @@
 //! build, committed alongside the code. Maintained two ways (per project config):
 //!   * agent-authored — a managed directive in CLAUDE.md/AGENTS.md asks the agent
 //!     to keep the doc current;
-//!   * derived — EvorIde distills the user's prompts from the Claude session as a
+//!   * derived — EvorIDE distills the user's prompts from the Claude session as a
 //!     backstop (on session-end / before commit).
 
 use serde::{Deserialize, Serialize};
@@ -112,7 +112,7 @@ pub fn set_enabled(project: &str, enabled: bool, mode: &str) -> Result<IntentCon
 
 fn directive_block(_doc_path: &str) -> String {
     format!(
-        "{START}\n## IntentFlow (EvorIde-managed)\n\
+        "{START}\n## IntentFlow (EvorIDE-managed)\n\
          This project uses IntentFlow — keep `.intentflow/` current. When the user states a \
          new goal update `.intentflow/vision.md`; when you make a notable change add a dated \
          entry to `.intentflow/timeline.md` crediting yourself as the agent. It is committed \
@@ -156,7 +156,7 @@ fn strip_block(text: &str) -> String {
 }
 
 const TIMELINE_TEMPLATE: &str = "# Timeline\n\
-<!-- IntentFlow timeline — maintained by EvorIde and the agent. Committed with the code. -->\n";
+<!-- IntentFlow timeline — maintained by EvorIDE and the agent. Committed with the code. -->\n";
 
 /// Scaffold a `.intentflow/` directory (IntentFlow layout) if absent.
 fn ensure_doc(project: &str, _doc_path: &str) -> Result<(), String> {
@@ -178,7 +178,7 @@ fn ensure_doc(project: &str, _doc_path: &str) -> Result<(), String> {
     }
     let cfg = dir.join("config.json");
     if !cfg.exists() {
-        let _ = std::fs::write(&cfg, "{\n  \"version\": 1,\n  \"managedBy\": \"EvorIde\"\n}\n");
+        let _ = std::fs::write(&cfg, "{\n  \"version\": 1,\n  \"managedBy\": \"EvorIDE\"\n}\n");
     }
     Ok(())
 }

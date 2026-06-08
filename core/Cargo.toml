@@ -2,6 +2,6 @@
 name = "eterm-core"
 edition.workspace = true
 version.workspace = true
-description = "Shared terminal output hygiene + issue detection for eterm and EvorIde"
+description = "Shared terminal output hygiene + issue detection for eterm and EvorIDE"
 
 [dependencies]

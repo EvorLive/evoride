@@ -1,5 +1,5 @@
 //! Shared eterm core. Terminal-output hygiene and issue detection used by both
-//! the standalone eterm TUI and the EvorIde backend, so "the terminal uses
+//! the standalone eterm TUI and the EvorIDE backend, so "the terminal uses
 //! eterm" — including the **fix this issue** feature — from one implementation.
 
 /// Strip ANSI/VT escape sequences, keeping printable text and newlines so

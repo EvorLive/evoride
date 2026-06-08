@@ -1,7 +1,7 @@
 //! Per-agent edit tracking. Each spawned coding agent logs the files it changes
 //! to `<project>/.evoride/agents/<id>/edits.jsonl` (one JSON object per line),
 //! driven by a managed skill block in CLAUDE.md/AGENTS.md plus the
-//! `$EVORIDE_EDITS` env var injected into its pty. EvorIde reads the log back to
+//! `$EVORIDE_EDITS` env var injected into its pty. EvorIDE reads the log back to
 //! show, per agent, which files that agent changed.
 
 use serde::Serialize;
@@ -20,11 +20,11 @@ const END: &str = "<!-- evoride:edits:end -->";
 /// The managed skill block instructing the agent to log its edits.
 fn skill_block() -> String {
     format!(
-        "{START}\n## Edit tracking (EvorIde)\n\
+        "{START}\n## Edit tracking (EvorIDE)\n\
          After you create or modify a file, append ONE json line to the file at the path in the \
          `$EVORIDE_EDITS` env var, recording what you changed:\n\
          `echo '{{\"file\":\"<repo-relative path>\",\"info\":\"<short what/why>\"}}' >> \"$EVORIDE_EDITS\"`\n\
-         This lets EvorIde show which files you changed in this session. Do it for every edit.\n{END}"
+         This lets EvorIDE show which files you changed in this session. Do it for every edit.\n{END}"
     )
 }
 

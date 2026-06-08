@@ -42,7 +42,7 @@ fn open_window(app: AppHandle) -> Result<(), String> {
     let n = WINDOW_SEQ.fetch_add(1, Ordering::Relaxed);
     let label = format!("w-{n}");
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
-        .title("EvorIde")
+        .title("EvorIDE")
         .inner_size(1280.0, 820.0)
         .maximized(true)
         .build()
@@ -558,23 +558,71 @@ fn summary_dates(store: State<Store>) -> Vec<String> {
 
 /// Claude-written narrative for the day (runs `claude -p`, cached per day).
 #[tauri::command]
-fn daily_summary_ai(
+async fn daily_summary_ai(
     app: AppHandle,
-    store: State<Store>,
+    store: State<'_, Store>,
     date: Option<String>,
 ) -> Result<String, String> {
     let day = date.filter(|d| !d.trim().is_empty()).unwrap_or_else(summary::today);
-    let projects = store.list_projects();
     let cache_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("summaries");
-    summary::ai_summary(&store, &projects, &day, &cache_dir)
+    // Already generated today? Return instantly.
+    if let Some(cached) = summary::ai_cached(&cache_dir, &day) {
+        return Ok(cached);
+    }
+    // Build the activity log synchronously (touches the store), then run the
+    // blocking `claude -p` call off the IPC thread so the UI stays responsive.
+    let projects = store.list_projects();
+    let base = summary::ai_base(&store, &projects, &day);
+    tauri::async_runtime::spawn_blocking(move || summary::ai_generate(&base, &day, &cache_dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Return today's cached AI summary if one exists, without calling the LLM —
+/// so the Home view can show the last summary immediately on reopen.
+#[tauri::command]
+fn daily_summary_ai_cached(app: AppHandle, date: Option<String>) -> Option<String> {
+    let day = date.filter(|d| !d.trim().is_empty()).unwrap_or_else(summary::today);
+    let cache_dir = app.path().app_data_dir().ok()?.join("summaries");
+    summary::ai_cached(&cache_dir, &day)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// GUI apps launched from Finder/Dock/`.desktop` inherit a minimal PATH and do
+/// NOT source the user's shell profile, so user-installed CLIs (`claude`,
+/// `codex`, `node`, …) aren't found and agents fail to spawn — even though the
+/// same binary works when run from a terminal. Recover the real PATH from a
+/// login+interactive shell once at startup and apply it to this process, so all
+/// spawned ptys inherit it. (No-op on Windows, where PATH is normally intact.)
+#[cfg(not(target_os = "windows"))]
+fn fix_path_env() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    // Markers fence the value off from any noise an rc file might print.
+    let script = "printf '__EVPATH__%s__EVEND__' \"$PATH\"";
+    if let Ok(out) = std::process::Command::new(&shell)
+        .args(["-ilc", script])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        if let (Some(a), Some(b)) = (s.find("__EVPATH__"), s.find("__EVEND__")) {
+            let path = &s[a + "__EVPATH__".len()..b];
+            if path.contains('/') {
+                std::env::set_var("PATH", path);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn fix_path_env() {}
+
 pub fn run() {
+    // Must run before any agent is spawned so children inherit the real PATH.
+    fix_path_env();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -594,10 +642,17 @@ pub fn run() {
             let open_project = MenuItemBuilder::with_id("open-project", "Open Project…").build(app)?;
             let new_window = MenuItemBuilder::with_id("new-window", "New Window").build(app)?;
             let home = MenuItemBuilder::with_id("home", "Home").build(app)?;
+            // Preferences — standard ⌘, / Ctrl+, so it's discoverable on both
+            // macOS and Windows (the menu bar shows in-window on Windows).
+            let settings = MenuItemBuilder::with_id("settings", "Settings…")
+                .accelerator("CmdOrCtrl+,")
+                .build(app)?;
             let file_menu = SubmenuBuilder::new(app, "File")
                 .item(&open_project)
                 .item(&new_window)
                 .item(&home)
+                .separator()
+                .item(&settings)
                 .separator()
                 .item(&PredefinedMenuItem::quit(app, None)?)
                 .build()?;
@@ -637,6 +692,7 @@ pub fn run() {
             judge_agent,
             judge_agents,
             judge_helper,
+            daily_summary_ai_cached,
             set_always_on_top,
             archive_agent,
             delete_agent,

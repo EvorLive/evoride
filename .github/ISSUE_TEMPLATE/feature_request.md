@@ -12,7 +12,7 @@ What would you like to be able to do?
 The problem it solves or the workflow it improves.
 
 **Is this about a specific agent?**
-If you want EvorIde to work better with a particular CLI agent, name it and how it's run.
+If you want EvorIDE to work better with a particular CLI agent, name it and how it's run.
 
 **Sketch (optional)**
 Rough UI/flow, a mock, or how you imagine it working.

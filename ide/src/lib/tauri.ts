@@ -4,6 +4,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getVersion } from "@tauri-apps/api/app";
+
+/// The app's real version (from tauri.conf.json, which the release workflow
+/// stamps from the git tag) — so the UI reflects the published release.
+export const appVersion = () => getVersion();
 
 export interface Project {
   id: string;
@@ -211,6 +216,9 @@ export const dailySummary = (date?: string) =>
   invoke<string>("daily_summary", { date });
 export const dailySummaryAi = (date?: string) =>
   invoke<string>("daily_summary_ai", { date });
+/// Previously-generated AI summary for the day, if cached (no LLM call).
+export const dailySummaryAiCached = (date?: string) =>
+  invoke<string | null>("daily_summary_ai_cached", { date });
 export const summaryDates = () => invoke<string[]>("summary_dates");
 
 // --- misc ---

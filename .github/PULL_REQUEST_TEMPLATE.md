@@ -4,7 +4,7 @@
 <!-- What does this change, and what problem does it solve? Link any issue: Closes #123 -->
 
 ## Component(s)
-- [ ] EvorIde (`ide/`)
+- [ ] EvorIDE (`ide/`)
 - [ ] eterm TUI (`tui/`)
 - [ ] relay (`server/`)
 - [ ] web dashboard (`web/`)

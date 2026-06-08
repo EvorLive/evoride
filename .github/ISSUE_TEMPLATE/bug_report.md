@@ -17,7 +17,7 @@ A clear description of the bug.
 What you expected to happen.
 
 **Component**
-- [ ] EvorIde (the IDE)
+- [ ] EvorIDE (the IDE)
 - [ ] eterm (TUI)
 - [ ] relay (server)
 - [ ] web dashboard

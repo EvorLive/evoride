@@ -44,7 +44,7 @@ export default function ProjectRail({
         title="Home / overview"
       >
         <span className="brand-mark">▮</span>
-        <span className="prail-brand-name">EvorIde</span>
+        <span className="prail-brand-name">EvorIDE</span>
       </button>
       {onWorkspace && (
         <button

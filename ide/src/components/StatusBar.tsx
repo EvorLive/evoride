@@ -15,11 +15,10 @@ function fmtK(n: number): string {
   return `${n}`;
 }
 
-const APP_VERSION = "0.1.0";
-
 // Bottom bar: git branch/status on the left, active agent + Claude info right.
 export default function StatusBar({
   git,
+  version,
   projectName,
   activeAgent,
   live,
@@ -29,10 +28,13 @@ export default function StatusBar({
   onOpenUrl,
   theme,
   onCycleTheme,
+  onOpenSettings,
   cwd,
   onGitRefresh,
 }: {
   git: GitStatus | null;
+  /** App version from the release tag; falls back to the bundled default. */
+  version: string;
   /** Active project name, shown so it's clear which project the bar describes. */
   projectName: string | null;
   activeAgent: AgentRecord | null;
@@ -43,6 +45,7 @@ export default function StatusBar({
   onOpenUrl: (url: string) => void;
   theme: "system" | "light" | "dark";
   onCycleTheme: () => void;
+  onOpenSettings: () => void;
   cwd: string | null;
   onGitRefresh: () => void;
 }) {
@@ -54,7 +57,7 @@ export default function StatusBar({
   return (
     <footer className="statusbar">
       <div className="status-left">
-        <span className="status-ver">EvorIde v{APP_VERSION}</span>
+        <span className="status-ver">EvorIDE{version ? ` v${version}` : ""}</span>
         {projectName && (
           <span className="status-proj" title={`Project: ${projectName}`}>
             ▮ {projectName}
@@ -97,6 +100,9 @@ export default function StatusBar({
           title={`Theme: ${theme} (click to change)`}
         >
           {themeIcon} {theme}
+        </button>
+        <button className="status-theme" onClick={onOpenSettings} title="Settings (⌘,)">
+          ⚙
         </button>
         {url && (
           <button className="status-url" onClick={() => onOpenUrl(url)} title={url}>

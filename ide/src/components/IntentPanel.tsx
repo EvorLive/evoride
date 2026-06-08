@@ -68,7 +68,7 @@ export default function IntentPanel({ projectPath }: { projectPath: string }) {
         <div className="intent-off">
           <p>
             Capture what this project is for using <strong>IntentFlow</strong> —
-            a committed <code>.intentflow/</code> with vision + a timeline. EvorIde
+            a committed <code>.intentflow/</code> with vision + a timeline. EvorIDE
             distills entries from your sessions and credits <em>who</em> wrote the
             intent and <em>which coding agent</em> was used; the agent keeps it
             current too. Because it lives in the repo, any IDE opening the project

@@ -6,6 +6,7 @@ import RunControl from "./components/RunControl";
 import StatusBar from "./components/StatusBar";
 import HomeView from "./components/HomeView";
 import HomeBar from "./components/HomeBar";
+import SettingsDialog from "./components/SettingsDialog";
 import CommandPalette, { type Command } from "./components/CommandPalette";
 // Heavy / on-demand components are code-split (xterm, editor, diff, panels).
 const GridWorkspace = lazy(() => import("./components/GridWorkspace"));
@@ -96,6 +97,11 @@ export default function App() {
   // Hidden helper-judge: per-agent classified state + plumbing to run it on idle.
   const [agentState, setAgentState] = useState<Record<string, "working" | "passive" | "active">>({});
   const [hasJudge, setHasJudge] = useState(false);
+  // Real app version (from the release tag → tauri.conf.json), shown in the bars.
+  const [appVer, setAppVer] = useState("");
+  useEffect(() => {
+    api.appVersion().then(setAppVer).catch(() => {});
+  }, []);
   const lastOutputRef = useRef<Record<string, number>>({});
   const judgedRef = useRef<Record<string, number>>({});
   // Multi-terminal "Workspace" grid. Several named workspaces, each holding up
@@ -135,13 +141,26 @@ export default function App() {
   }, [theme]);
   const cycleTheme = () =>
     setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system"));
-  // "Stick out" — keep the IDE window above other apps.
-  const [pinned, setPinned] = useState(() => localStorage.getItem("evoride-pinned") === "1");
+  // One-time: clear the old, fumble-prone auto-pin key so nobody is stuck on top.
   useEffect(() => {
-    api.setAlwaysOnTop(pinned).catch(() => {});
-    localStorage.setItem("evoride-pinned", pinned ? "1" : "0");
-  }, [pinned]);
-  const togglePin = () => setPinned((p) => !p);
+    localStorage.removeItem("evoride-pinned");
+  }, []);
+  // Always-on-top is now an opt-in Setting (default OFF), applied on change.
+  const [alwaysOnTop, setAlwaysOnTop] = useState(
+    () => localStorage.getItem("evoride-alwaysontop") === "1",
+  );
+  useEffect(() => {
+    api.setAlwaysOnTop(alwaysOnTop).catch(() => {});
+    localStorage.setItem("evoride-alwaysontop", alwaysOnTop ? "1" : "0");
+  }, [alwaysOnTop]);
+  // AI idle analyzer (helper-judge) — user toggle, default ON.
+  const [judgeEnabled, setJudgeEnabled] = useState(
+    () => localStorage.getItem("evoride-judge") !== "0",
+  );
+  useEffect(() => {
+    localStorage.setItem("evoride-judge", judgeEnabled ? "1" : "0");
+  }, [judgeEnabled]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const openPalette = (mode: "files" | "commands" = "commands") => {
     setPaletteMode(mode);
     setPaletteOpen(true);
@@ -444,6 +463,9 @@ export default function App() {
         case "home":
           setView("home");
           break;
+        case "settings":
+          setSettingsOpen(true);
+          break;
       }
     }).then((u) => {
       un = u;
@@ -479,12 +501,12 @@ export default function App() {
     };
   }, [project, agents, live, activeAgentId]);
 
-  // OS window title like "EvorIde - ~/sajilobima/".
+  // OS window title like "EvorIDE - ~/sajilobima/".
   useEffect(() => {
     let loc = project?.path ?? "";
     if (home && loc.startsWith(home)) loc = `~${loc.slice(home.length)}`;
     if (loc && !loc.endsWith("/")) loc += "/";
-    const title = project ? `EvorIde - ${loc}` : "EvorIde";
+    const title = project ? `EvorIDE - ${loc}` : "EvorIDE";
     document.title = title;
     getCurrentWindow().setTitle(title).catch(() => {});
   }, [project, home]);
@@ -735,7 +757,7 @@ export default function App() {
   // helper call per tick (not one process per agent), reconciling the "needs you"
   // flag: adding misses, clearing false positives, marking passively-idle ones.
   useEffect(() => {
-    if (!hasJudge) return;
+    if (!hasJudge || !judgeEnabled) return;
     const IDLE_MS = 5000;
     let busy = false; // one batch in flight at a time
     const applyVerdict = (id: string, j: api.Judgement | null) => {
@@ -792,7 +814,7 @@ export default function App() {
     };
     const iv = setInterval(tick, 3000);
     return () => clearInterval(iv);
-  }, [hasJudge, runningList]);
+  }, [hasJudge, judgeEnabled, runningList]);
 
   const addTask = (title: string) => {
     if (!project) return;
@@ -954,9 +976,9 @@ export default function App() {
       cmds.push({ id: "panel-edits", label: "Toggle Edits panel", hint: "Panel", run: () => setRightPanel((p) => (p === "edits" ? null : "edits")) });
     }
 
-    // Appearance + window (always).
+    // Appearance + settings (always).
     cmds.push({ id: "toggle-theme", label: "Toggle theme", hint: "Appearance", run: cycleTheme });
-    cmds.push({ id: "toggle-pin", label: "Stick out (always on top)", hint: "Window", run: togglePin });
+    cmds.push({ id: "settings", label: "Settings…", hint: "⌘,", run: () => setSettingsOpen(true) });
 
     return cmds;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -964,15 +986,28 @@ export default function App() {
 
   // Rendered once, overlaying whichever view is active.
   const palette = (
-    <CommandPalette
-      open={paletteOpen}
-      mode={paletteMode}
-      files={paletteFiles}
-      commands={paletteCommands}
-      projectPath={project?.path ?? null}
-      onOpenFile={openPaletteFile}
-      onClose={() => setPaletteOpen(false)}
-    />
+    <>
+      <CommandPalette
+        open={paletteOpen}
+        mode={paletteMode}
+        files={paletteFiles}
+        commands={paletteCommands}
+        projectPath={project?.path ?? null}
+        onOpenFile={openPaletteFile}
+        onClose={() => setPaletteOpen(false)}
+      />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        version={appVer}
+        theme={theme}
+        setTheme={setTheme}
+        alwaysOnTop={alwaysOnTop}
+        setAlwaysOnTop={setAlwaysOnTop}
+        judgeEnabled={judgeEnabled}
+        setJudgeEnabled={setJudgeEnabled}
+      />
+    </>
   );
 
   // No projects at all → the original welcome screen.
@@ -980,7 +1015,7 @@ export default function App() {
     return (
       <div className="ide">
         <div className="welcome">
-          <h1>EvorIde</h1>
+          <h1>EvorIDE</h1>
           <p>Open a project folder to start running agents.</p>
           <button className="btn" onClick={openFolder}>
             Open folder
@@ -1023,12 +1058,12 @@ export default function App() {
           />
         </div>
         <HomeBar
+          version={appVer}
           projectCount={knownProjects.length}
           runningCount={runningList.length}
           waitingCount={waitingAgents.size}
           onOpenPalette={() => openPalette("commands")}
-          pinned={pinned}
-          onTogglePin={togglePin}
+          onOpenSettings={() => setSettingsOpen(true)}
           theme={theme}
           onCycleTheme={cycleTheme}
         />
@@ -1082,12 +1117,12 @@ export default function App() {
           </Suspense>
         </div>
         <HomeBar
+          version={appVer}
           projectCount={knownProjects.length}
           runningCount={runningList.length}
           waitingCount={waitingAgents.size}
           onOpenPalette={() => openPalette("commands")}
-          pinned={pinned}
-          onTogglePin={togglePin}
+          onOpenSettings={() => setSettingsOpen(true)}
           theme={theme}
           onCycleTheme={cycleTheme}
         />
@@ -1101,7 +1136,7 @@ export default function App() {
     return (
       <div className="ide">
         <div className="welcome">
-          <h1>EvorIde</h1>
+          <h1>EvorIDE</h1>
           <p>Select a project to continue.</p>
           <button className="btn" onClick={() => setView("home")}>
             Go to Home
@@ -1400,6 +1435,7 @@ export default function App() {
 
       <StatusBar
         git={git}
+        version={appVer}
         projectName={project?.name ?? null}
         activeAgent={activeRec}
         live={activeIsLive}
@@ -1411,6 +1447,7 @@ export default function App() {
         onCycleTheme={() =>
           setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system"))
         }
+        onOpenSettings={() => setSettingsOpen(true)}
         cwd={project?.path ?? null}
         onGitRefresh={refreshGitStatus}
       />

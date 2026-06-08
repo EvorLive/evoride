@@ -1,6 +1,6 @@
 <div align="center">
 
-# EvorIde
+# EvorIDE
 
 ### An open workspace for **agentic development** — with *any* coding agent.
 
@@ -23,10 +23,10 @@ single-agent, single-project, and tied to one vendor. Real work means **several 
 running at once, across **several repos**, and you constantly lose track of *what each one
 is doing*, *which one needs you*, and *why* a change was made.
 
-EvorIde is a bet on a different shape:
+EvorIDE is a bet on a different shape:
 
 - **Agent-agnostic.** It's a terminal-first workspace. If your agent runs in a shell
-  (`claude`, `codex`, `aider`, your own script…), EvorIde can host it. No lock-in.
+  (`claude`, `codex`, `aider`, your own script…), EvorIDE can host it. No lock-in.
 - **Project-centric.** Each project collects its agents, run commands, git, and intent in
   one place. Switch projects from a rail that tells you which ones are *waiting for you*.
 - **Intent-first.** The project's goals and decisions live *in the repo* (via
@@ -43,7 +43,7 @@ A small monorepo of composable pieces. The IDE is the flagship; the rest stand a
 
 | Component | What it is | Stack |
 |---|---|---|
-| **`ide/`** — EvorIde | The multi-agent desktop IDE (the main app) | Tauri 2 · React · Vite |
+| **`ide/`** — EvorIDE | The multi-agent desktop IDE (the main app) | Tauri 2 · React · Vite |
 | **`tui/`** — eterm | A "smart terminal": real pty shell + agent/error detection, opt-in cloud sync | Rust · ratatui |
 | **`server/`** — relay | WebSocket relay to view/control terminal sessions remotely | Rust · Axum |
 | **`web/`** — dashboard | Browser dashboard for live sessions (xterm.js) | Next.js |
@@ -52,7 +52,7 @@ A small monorepo of composable pieces. The IDE is the flagship; the rest stand a
 
 ---
 
-## EvorIde features
+## EvorIDE features
 
 Everything below works against **any** agent CLI — Claude Code and Codex are first-class,
 and you can [add your own](#add-your-own-agent) in one file.
@@ -91,7 +91,7 @@ and you can [add your own](#add-your-own-agent) in one file.
 - **Tauri prerequisites** for your OS — <https://tauri.app/start/prerequisites/>
   (on macOS: Xcode Command Line Tools)
 
-### Run EvorIde (the IDE)
+### Run EvorIDE (the IDE)
 ```bash
 cd ide
 pnpm install
@@ -138,7 +138,7 @@ data-driven/user-configurable. See the [roadmap](#roadmap).
 ## Architecture (1 minute)
 
 ```
-            ┌────────────── EvorIde (Tauri) ──────────────┐
+            ┌────────────── EvorIDE (Tauri) ──────────────┐
             │  React UI  ◄── invoke/events ──►  Rust core   │
             │                                  ├ session mgr (ptys)
  you ──────►│  rail · agents · terminal · git  ├ store (projects/agents/tasks)

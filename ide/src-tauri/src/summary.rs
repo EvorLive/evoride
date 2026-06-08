@@ -163,22 +163,34 @@ fn metrics_block(store: &Store, projects: &[Project], date: &str) -> String {
     out
 }
 
-/// Build a `claude -p` narrative from the metrics + titles. Cached per-day under
-/// `cache_dir`. Returns an error if the `claude` CLI isn't available.
-pub fn ai_summary(
-    store: &Store,
-    projects: &[Project],
-    date: &str,
-    cache_dir: &Path,
-) -> Result<String, String> {
+/// Path of the cached AI summary for a day.
+fn ai_cache_path(cache_dir: &Path, date: &str) -> std::path::PathBuf {
+    cache_dir.join(format!("{date}-ai.md"))
+}
+
+/// Return a previously-generated AI summary for `date` if one is cached, WITHOUT
+/// calling the LLM. Lets the Home view show the last summary on reopen.
+pub fn ai_cached(cache_dir: &Path, date: &str) -> Option<String> {
+    std::fs::read_to_string(ai_cache_path(cache_dir, date))
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+}
+
+/// Build the raw (no-LLM) activity log used as the prompt input. Reads the store,
+/// so callers run this synchronously, then hand `ai_generate` off-thread.
+pub fn ai_base(store: &Store, projects: &[Project], date: &str) -> String {
+    summary_for(store, projects, date)
+}
+
+/// Run `claude -p` on the prepared `base` log and cache the result. Pure I/O +
+/// subprocess (no `Store`), so it's safe to call from a blocking thread. Returns
+/// the cached value immediately if present.
+pub fn ai_generate(base: &str, date: &str, cache_dir: &Path) -> Result<String, String> {
     let _ = std::fs::create_dir_all(cache_dir);
-    let cache = cache_dir.join(format!("{date}-ai.md"));
-    if let Ok(c) = std::fs::read_to_string(&cache) {
-        if !c.trim().is_empty() {
-            return Ok(c);
-        }
+    let cache = ai_cache_path(cache_dir, date);
+    if let Some(c) = ai_cached(cache_dir, date) {
+        return Ok(c);
     }
-    let base = summary_for(store, projects, date);
     let prompt = format!(
         "Below is a developer's raw activity log for {date}. Write a short, friendly \
          daily-standup style summary (3–5 sentences): what they worked on, progress made, \

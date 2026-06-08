@@ -71,6 +71,11 @@ export default function HomeView({
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
+  // Show the previously-generated summary on (re)open — no need to click again.
+  useEffect(() => {
+    api.dailySummaryAiCached().then((c) => c && setAiSummary(c)).catch(() => {});
+  }, []);
+
   const generateAi = () => {
     setAiBusy(true);
     setAiError(null);
