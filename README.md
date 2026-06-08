@@ -2,10 +2,14 @@
 
 # EvorIDE
 
-### An open workspace for **agentic development** — with *any* coding agent.
+### Run many coding agents at once — and always know which one needs you.
 
-Run, watch, and steer Claude Code, Codex, or any CLI agent across all your projects —
-from one window. Keep the **why** of your code next to the **what**.
+An open, **agent-agnostic** desktop IDE for Claude Code, Codex, or any CLI agent. Watch and
+steer every agent across every project from one window, jump straight to the one that's
+blocked, and keep the **why** of your code next to the **what**.
+
+> **Why:** real agentic work means several agents, several repos, and constantly losing
+> track of which one is waiting on you. EvorIDE makes that one glance.
 
 **[⬇ Download](../../releases)** · **[📖 Docs & getting started](https://evorlive.github.io/evoride/)** · macOS · Windows · Linux
 
