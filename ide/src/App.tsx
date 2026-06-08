@@ -8,6 +8,7 @@ import HomeView from "./components/HomeView";
 import HomeBar from "./components/HomeBar";
 import SettingsDialog from "./components/SettingsDialog";
 import CommandPalette, { type Command } from "./components/CommandPalette";
+import { loadAgents, saveAgents, enabledClis, type AgentConfig } from "./lib/agents";
 // Heavy / on-demand components are code-split (xterm, editor, diff, panels).
 const GridWorkspace = lazy(() => import("./components/GridWorkspace"));
 const AgentTerminal = lazy(() => import("./components/AgentTerminal"));
@@ -161,6 +162,10 @@ export default function App() {
     localStorage.setItem("evoride-judge", judgeEnabled ? "1" : "0");
   }, [judgeEnabled]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // User-configurable agent registry (enable + path), persisted.
+  const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>(loadAgents);
+  useEffect(() => saveAgents(agentConfigs), [agentConfigs]);
+  const enabledAgentClis = useMemo(() => enabledClis(agentConfigs), [agentConfigs]);
   const openPalette = (mode: "files" | "commands" = "commands") => {
     setPaletteMode(mode);
     setPaletteOpen(true);
@@ -1006,6 +1011,8 @@ export default function App() {
         setAlwaysOnTop={setAlwaysOnTop}
         judgeEnabled={judgeEnabled}
         setJudgeEnabled={setJudgeEnabled}
+        agents={agentConfigs}
+        setAgents={setAgentConfigs}
       />
     </>
   );
@@ -1101,6 +1108,7 @@ export default function App() {
               runningList={runningList}
               inactiveAgents={inactiveAgents}
               projects={knownProjects}
+              clis={enabledAgentClis}
               workspaces={workspaces}
               activeWs={activeWs}
               onSwitchWs={setActiveWs}
@@ -1169,6 +1177,7 @@ export default function App() {
           live={live}
           waiting={waitingAgents}
           states={agentState}
+          clis={enabledAgentClis}
           activeAgentId={activeAgentId}
           git={git}
           sessions={continuableSessions}
@@ -1388,7 +1397,7 @@ export default function App() {
                 </div>
               ) : (
                 <div className="term-slot launcher-slot">
-                  <SessionLauncher onNew={newAgent} />
+                  <SessionLauncher onNew={newAgent} clis={enabledAgentClis} />
                 </div>
               )}
             </div>

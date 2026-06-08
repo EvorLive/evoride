@@ -327,6 +327,18 @@ fn judge_helper() -> Option<String> {
     judge::helper_name()
 }
 
+/// Resolve an agent command to the absolute path of its program, or `None` if
+/// it can't be found. Powers the Settings → Agents "detected" indicator and lets
+/// the UI warn before launching an unavailable agent.
+#[tauri::command]
+fn which_agent(command: String) -> Option<String> {
+    let program = command.split_whitespace().next().unwrap_or_default();
+    if program.is_empty() {
+        return None;
+    }
+    session::resolve_program(program)
+}
+
 #[tauri::command]
 fn archive_agent(store: State<Store>, manager: State<SessionManager>, id: String) {
     let _ = manager.close(&id);
@@ -692,6 +704,7 @@ pub fn run() {
             judge_agent,
             judge_agents,
             judge_helper,
+            which_agent,
             daily_summary_ai_cached,
             set_always_on_top,
             archive_agent,

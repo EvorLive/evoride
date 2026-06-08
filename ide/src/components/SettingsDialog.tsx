@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import * as api from "../lib/tauri";
+import type { AgentConfig } from "../lib/agents";
 
 // A simple on/off switch row.
 function Toggle({
@@ -44,6 +45,8 @@ export default function SettingsDialog({
   setAlwaysOnTop,
   judgeEnabled,
   setJudgeEnabled,
+  agents,
+  setAgents,
 }: {
   open: boolean;
   onClose: () => void;
@@ -54,15 +57,40 @@ export default function SettingsDialog({
   setAlwaysOnTop: (v: boolean) => void;
   judgeEnabled: boolean;
   setJudgeEnabled: (v: boolean) => void;
+  agents: AgentConfig[];
+  setAgents: (a: AgentConfig[]) => void;
 }) {
   const [dailySummary, setDailySummary] = useState(true);
   const [helper, setHelper] = useState<string | null>(null);
+  // Resolved program path per agent id (null = not found).
+  const [detected, setDetected] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     if (!open) return;
     api.getSettings().then((s) => setDailySummary(s.daily_summary)).catch(() => {});
     api.judgeHelper().then(setHelper).catch(() => {});
   }, [open]);
+
+  // Resolve each agent's program so we can show detected ✓ / not-found ✗.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    Promise.all(
+      agents.map((a) =>
+        a.command.trim()
+          ? api.whichAgent(a.command).then((p) => [a.id, p] as const).catch(() => [a.id, null] as const)
+          : Promise.resolve([a.id, ""] as const),
+      ),
+    ).then((pairs) => {
+      if (!cancelled) setDetected(Object.fromEntries(pairs));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, agents]);
+
+  const updateAgent = (id: string, patch: Partial<AgentConfig>) =>
+    setAgents(agents.map((a) => (a.id === id ? { ...a, ...patch } : a)));
 
   useEffect(() => {
     if (!open) return;
@@ -138,6 +166,52 @@ export default function SettingsDialog({
               checked={dailySummary}
               onChange={toggleDaily}
             />
+          </div>
+
+          <div className="set-section">
+            <div className="set-section-title">Agent CLIs</div>
+            <p className="set-row-hint" style={{ marginBottom: 8 }}>
+              Enable the agents you use. Leave the path on <b>automatic</b> to find it on your
+              PATH, or set an explicit path if it isn’t found.
+            </p>
+            {agents.map((a) => {
+              const det = detected[a.id];
+              const isShell = a.command.trim() === "";
+              return (
+                <div className="agent-cfg" key={a.id}>
+                  <div className="agent-cfg-top">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={a.enabled}
+                      className={`set-switch ${a.enabled ? "on" : ""}`}
+                      onClick={() => updateAgent(a.id, { enabled: !a.enabled })}
+                    >
+                      <span className="set-knob" />
+                    </button>
+                    <span className="agent-cfg-name">{a.label}</span>
+                    {isShell ? (
+                      <span className="agent-cfg-ok">default shell</span>
+                    ) : det ? (
+                      <span className="agent-cfg-ok" title={det}>
+                        ✓ found
+                      </span>
+                    ) : det === "" ? null : (
+                      <span className="agent-cfg-bad">✗ not found</span>
+                    )}
+                  </div>
+                  {!isShell && (
+                    <input
+                      className="agent-cfg-path"
+                      value={a.command}
+                      placeholder="automatic (on PATH) — e.g. claude, or /full/path/to/claude"
+                      onChange={(e) => updateAgent(a.id, { command: e.target.value })}
+                      spellCheck={false}
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <div className="set-section">

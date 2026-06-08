@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import type { AgentRecord, ClaudeSession, GitStatus } from "../lib/tauri";
-import { CLIS } from "../lib/clis";
+import type { CliDef } from "../lib/clis";
 
 function fmtAgo(unix: number): string {
   const s = Math.max(0, Math.floor(Date.now() / 1000 - unix));
@@ -18,6 +18,7 @@ export default function AgentsColumn({
   live,
   waiting,
   states,
+  clis,
   activeAgentId,
   git,
   sessions,
@@ -38,6 +39,8 @@ export default function AgentsColumn({
   waiting: Set<string>;
   /** Helper-judge classification per agent (working/passive/active). */
   states: Record<string, "working" | "passive" | "active">;
+  /** Enabled, configured launchable agents. */
+  clis: CliDef[];
   activeAgentId: string | null;
   git: GitStatus | null;
   /** Past Claude sessions NOT already running in this window. */
@@ -178,7 +181,7 @@ export default function AgentsColumn({
       {adding ? (
         <div className="agent-new">
           <div className="cli-quick">
-            {CLIS.map((c) => (
+            {clis.map((c) => (
               <button
                 key={c.id}
                 className="cli-btn"

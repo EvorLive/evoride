@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import AgentTerminal from "./AgentTerminal";
-import { CLIS } from "../lib/clis";
+import type { CliDef } from "../lib/clis";
 import type { AgentRecord, Project } from "../lib/tauri";
 
 function GridIcon() {
@@ -32,6 +32,7 @@ export default function GridWorkspace({
   runningList,
   inactiveAgents,
   projects,
+  clis,
   workspaces,
   activeWs,
   onSwitchWs,
@@ -54,6 +55,8 @@ export default function GridWorkspace({
   runningList: AgentRecord[];
   inactiveAgents: AgentRecord[];
   projects: Project[];
+  /** Enabled, configured launchable agents. */
+  clis: CliDef[];
   workspaces: Workspace[];
   activeWs: string;
   onSwitchWs: (id: string) => void;
@@ -176,7 +179,7 @@ export default function GridWorkspace({
               </select>
               <div className="grid-pop-label">CLI</div>
               <div className="grid-pop-clis">
-                {CLIS.map((c) => (
+                {clis.map((c) => (
                   <button
                     key={c.id}
                     className="grid-pop-item"

@@ -1,16 +1,18 @@
-import { CLIS } from "../lib/clis";
+import type { CliDef } from "../lib/clis";
 
 // Shown in the main area when no agent is active: quick launchers for each CLI.
 // (Continuing past sessions lives in the agents column.)
 export default function SessionLauncher({
   onNew,
+  clis,
 }: {
   onNew: (title: string, command: string) => void;
+  clis: CliDef[];
 }) {
   return (
     <div className="launcher">
       <div className="launcher-actions">
-        {CLIS.map((c, i) => (
+        {clis.map((c, i) => (
           <button
             key={c.id}
             className={`launch-card ${i === 1 ? "primary" : ""}`}

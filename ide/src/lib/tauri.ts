@@ -260,6 +260,10 @@ export interface Judgement {
 export const judgeAgent = (id: string) => invoke<Judgement | null>("judge_agent", { id });
 export const judgeHelper = () => invoke<string | null>("judge_helper");
 
+/// Resolve an agent command to its program's absolute path, or null if missing.
+export const whichAgent = (command: string) =>
+  invoke<string | null>("which_agent", { command });
+
 export interface JudgeResult {
   id: string;
   judgement: Judgement | null;

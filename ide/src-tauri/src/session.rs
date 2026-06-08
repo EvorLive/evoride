@@ -86,6 +86,14 @@ impl SessionManager {
         rows: u16,
         cols: u16,
     ) -> Result<AgentInfo, String> {
+        // Validate up front: a missing CLI (e.g. `claude` not on PATH in a
+        // packaged app) should fail with a clear message, not a dead terminal.
+        let program = command.split_whitespace().next().unwrap_or_default();
+        if !program.is_empty() && resolve_program(program).is_none() {
+            return Err(format!(
+                "'{program}' not found. Set its path in Settings → Agents, or install it and reopen."
+            ));
+        }
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -276,4 +284,36 @@ fn build_command(command: &str) -> CommandBuilder {
         cmd.arg(arg);
     }
     cmd
+}
+
+#[cfg(windows)]
+const EXE_EXTS: &[&str] = &["", ".exe", ".cmd", ".bat"];
+#[cfg(not(windows))]
+const EXE_EXTS: &[&str] = &[""];
+
+/// Resolve a program to an absolute path: honor an explicit path (containing a
+/// separator), otherwise search PATH (with Windows executable extensions).
+/// Returns `None` when it can't be found — so spawning can fail with a clear
+/// message instead of a silent dead terminal.
+pub fn resolve_program(program: &str) -> Option<String> {
+    let has_sep = program.contains('/') || program.contains('\\');
+    if has_sep {
+        for ext in EXE_EXTS {
+            let cand = format!("{program}{ext}");
+            if std::path::Path::new(&cand).is_file() {
+                return Some(cand);
+            }
+        }
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        for ext in EXE_EXTS {
+            let cand = dir.join(format!("{program}{ext}"));
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
