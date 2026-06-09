@@ -1,1 +1,4 @@
 /target
+
+# EvorIDE per-session edit-tracking logs (keep run.json, drop agent logs)
+.evoride/agents/

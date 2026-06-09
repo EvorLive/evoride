@@ -10,6 +10,10 @@ pub struct Settings {
     /// Generate a daily activity summary on the Home view. Default ON.
     #[serde(default = "default_true")]
     pub daily_summary: bool,
+    /// Ids of bundled skills the user has turned off. Anything not listed stays
+    /// at its default (auto-enabled), so new bundled skills opt in automatically.
+    #[serde(default)]
+    pub skills_disabled: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -20,6 +24,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             daily_summary: true,
+            skills_disabled: Vec::new(),
         }
     }
 }
@@ -58,6 +63,22 @@ impl SettingsStore {
     pub fn set_daily_summary(&self, enabled: bool) -> Settings {
         let mut data = self.data.lock().unwrap();
         data.daily_summary = enabled;
+        self.save(&data);
+        data.clone()
+    }
+
+    /// Ids of skills the user has disabled.
+    pub fn skills_disabled(&self) -> Vec<String> {
+        self.data.lock().unwrap().skills_disabled.clone()
+    }
+
+    /// Record a skill as enabled (removed from the disabled list) or disabled.
+    pub fn set_skill_disabled(&self, id: &str, disabled: bool) -> Settings {
+        let mut data = self.data.lock().unwrap();
+        data.skills_disabled.retain(|x| x != id);
+        if disabled {
+            data.skills_disabled.push(id.to_string());
+        }
         self.save(&data);
         data.clone()
     }

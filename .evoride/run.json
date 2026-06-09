@@ -1,0 +1,9 @@
+{
+  "services": [
+    {
+      "name": "run",
+      "command": "",
+      "cwd": ""
+    }
+  ]
+}

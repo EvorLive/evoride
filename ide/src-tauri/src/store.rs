@@ -31,6 +31,16 @@ pub struct AgentRecord {
     pub status: String,
 }
 
+/// One step in a task's breakdown (an architect's plan, tracked individually).
+/// Maps to a Jira subtask / Notion checklist item / evor.live subtask.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    pub id: String,
+    pub title: String,
+    /// "todo" | "doing" | "done"
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -41,6 +51,13 @@ pub struct Task {
     pub status: String,
     pub agent_id: Option<String>,
     pub created_at: i64,
+    /// Longer free-text detail (provider "description"/"body"); maps to Jira
+    /// description, Notion page body, evor.live task detail.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Architect breakdown — ordered, individually-tracked steps.
+    #[serde(default)]
+    pub steps: Vec<Step>,
     /// The day it's planned for (YYYY-MM-DD), for daily planning.
     #[serde(default)]
     pub planned_for: Option<String>,
@@ -138,7 +155,9 @@ impl Store {
                  planned_for  TEXT,
                  source       TEXT,
                  external_id  TEXT,
-                 external_url TEXT
+                 external_url TEXT,
+                 description  TEXT,
+                 steps        TEXT
              );",
         );
         // Add the planning/sync columns to pre-existing task tables (ignore the
@@ -148,6 +167,8 @@ impl Store {
             "source TEXT",
             "external_id TEXT",
             "external_url TEXT",
+            "description TEXT",
+            "steps TEXT",
         ] {
             let _ = conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col}"), []);
         }
@@ -228,6 +249,11 @@ impl Store {
             source: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "local".into()),
             external_id: row.get(8)?,
             external_url: row.get(9)?,
+            description: row.get(10)?,
+            steps: row
+                .get::<_, Option<String>>(11)?
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
         })
     }
 
@@ -429,6 +455,7 @@ impl Store {
         title: &str,
         agent_id: Option<String>,
         planned_for: Option<String>,
+        description: Option<String>,
     ) -> Task {
         let task = Task {
             id: gen_id("task"),
@@ -437,6 +464,8 @@ impl Store {
             status: "todo".into(),
             agent_id,
             created_at: now(),
+            description,
+            steps: Vec::new(),
             planned_for,
             source: "local".into(),
             external_id: None,
@@ -444,8 +473,8 @@ impl Store {
         };
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
-            "INSERT INTO tasks (id, project_id, title, status, agent_id, created_at, planned_for, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO tasks (id, project_id, title, status, agent_id, created_at, planned_for, source, description)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 task.id,
                 task.project_id,
@@ -454,7 +483,8 @@ impl Store {
                 task.agent_id,
                 task.created_at,
                 task.planned_for,
-                task.source
+                task.source,
+                task.description
             ],
         );
         task
@@ -466,6 +496,101 @@ impl Store {
             "UPDATE tasks SET status = ?1 WHERE id = ?2",
             params![status, id],
         );
+    }
+
+    pub fn set_task_description(&self, id: &str, description: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE tasks SET description = ?1 WHERE id = ?2",
+            params![description, id],
+        );
+    }
+
+    /// Append a line to a task's description (used when merging a duplicate's
+    /// requirement into an existing task).
+    pub fn append_task_description(&self, id: &str, note: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE tasks SET description = CASE \
+             WHEN description IS NULL OR description = '' THEN ?1 \
+             ELSE description || char(10) || ?1 END WHERE id = ?2",
+            params![note, id],
+        );
+    }
+
+    /// Link a task to the agent currently working it (for status round-tripping).
+    pub fn set_task_agent(&self, id: &str, agent_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE tasks SET agent_id = ?1 WHERE id = ?2",
+            params![agent_id, id],
+        );
+    }
+
+    /// Replace a task's breakdown steps (stored as JSON).
+    pub fn set_task_steps(&self, id: &str, steps: &[Step]) {
+        let json = serde_json::to_string(steps).unwrap_or_else(|_| "[]".into());
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE tasks SET steps = ?1 WHERE id = ?2",
+            params![json, id],
+        );
+    }
+
+    /// Fetch a single task by id.
+    pub fn get_task(&self, id: &str) -> Option<Task> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url, description, steps
+             FROM tasks WHERE id = ?1",
+            params![id],
+            Self::map_task,
+        )
+        .ok()
+    }
+
+    /// Find a task by its external source + id (e.g. a Jira issue key) — used to
+    /// tell whether an issue has already been imported.
+    pub fn task_by_external_id(&self, source: &str, external_id: &str) -> Option<Task> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url, description, steps
+             FROM tasks WHERE source = ?1 AND external_id = ?2 LIMIT 1",
+            params![source, external_id],
+            Self::map_task,
+        )
+        .ok()
+    }
+
+    /// Schedule a task for a given day (YYYY-MM-DD), e.g. "import to today".
+    pub fn set_task_planned_for(&self, id: &str, day: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE tasks SET planned_for = ?1 WHERE id = ?2",
+            params![day, id],
+        );
+    }
+
+    /// Link a local task to an external issue (used when pushing a task UP to
+    /// Jira creates a new issue).
+    pub fn set_task_external(&self, id: &str, source: &str, external_id: &str, external_url: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE tasks SET source = ?1, external_id = ?2, external_url = ?3 WHERE id = ?4",
+            params![source, external_id, external_url, id],
+        );
+    }
+
+    /// The task currently linked to an agent (most recent), if any.
+    pub fn task_for_agent(&self, agent_id: &str) -> Option<Task> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url, description, steps
+             FROM tasks WHERE agent_id = ?1 ORDER BY created_at DESC LIMIT 1",
+            params![agent_id],
+            Self::map_task,
+        )
+        .ok()
     }
 
     /// Re-assign a task to a project ("" = unassigned).
@@ -486,7 +611,7 @@ impl Store {
     pub fn list_all_tasks(&self) -> Vec<Task> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn.prepare(
-            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url
+            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url, description, steps
              FROM tasks ORDER BY created_at DESC, rowid DESC",
         ) {
             Ok(s) => s,
@@ -502,7 +627,7 @@ impl Store {
     pub fn list_tasks(&self, project_id: &str) -> Vec<Task> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn.prepare(
-            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url
+            "SELECT id, project_id, title, status, agent_id, created_at, planned_for, source, external_id, external_url, description, steps
              FROM tasks WHERE project_id = ?1
              ORDER BY created_at ASC, rowid ASC",
         ) {
@@ -514,6 +639,52 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         rows.filter_map(|r| r.ok()).collect()
+    }
+
+    /// Insert or update a task that originated from an external source, keyed by
+    /// (source, external_id). On update we refresh title/status/url (and
+    /// description if provided) but PRESERVE the local id, steps, agent link, and
+    /// project assignment (the user may have re-homed it). Returns (task, inserted).
+    pub fn upsert_external_task(
+        &self,
+        source: &str,
+        external_id: &str,
+        external_url: Option<&str>,
+        project_id: &str,
+        title: &str,
+        status: &str,
+        description: Option<&str>,
+    ) -> Option<(Task, bool)> {
+        let id = {
+            let conn = self.conn.lock().unwrap();
+            let existing: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM tasks WHERE source = ?1 AND external_id = ?2 LIMIT 1",
+                    params![source, external_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            match existing {
+                Some(id) => {
+                    let _ = conn.execute(
+                        "UPDATE tasks SET title = ?1, status = ?2, external_url = ?3, \
+                         description = COALESCE(?4, description) WHERE id = ?5",
+                        params![title, status, external_url, description, id],
+                    );
+                    (id, false)
+                }
+                None => {
+                    let id = gen_id("task");
+                    let _ = conn.execute(
+                        "INSERT INTO tasks (id, project_id, title, status, agent_id, created_at, source, external_id, external_url, description)
+                         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9)",
+                        params![id, project_id, title, status, now(), source, external_id, external_url, description],
+                    );
+                    (id, true)
+                }
+            }
+        };
+        self.get_task(&id.0).map(|t| (t, id.1))
     }
 }
 
@@ -548,7 +719,7 @@ mod tests {
         store.set_agent_status(&a.id, "exited");
         assert_eq!(store.get_agent(&a.id).unwrap().status, "exited");
 
-        let t = store.add_task(&p.id, "ship it", Some(a.id.clone()), None);
+        let t = store.add_task(&p.id, "ship it", Some(a.id.clone()), None, None);
         store.update_task(&t.id, "doing");
         assert_eq!(store.list_tasks(&p.id)[0].status, "doing");
         store.delete_task(&t.id);

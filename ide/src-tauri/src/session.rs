@@ -85,6 +85,8 @@ impl SessionManager {
         cwd: String,
         command: String,
         edits_path: String,
+        tasks_path: String,
+        project_tasks_path: String,
         rows: u16,
         cols: u16,
     ) -> Result<AgentInfo, String> {
@@ -112,6 +114,11 @@ impl SessionManager {
         // Per-agent edit tracking: the agent's id + where to log files it edits.
         cmd.env("EVORIDE_AGENT_ID", &id);
         cmd.env("EVORIDE_EDITS", &edits_path);
+        // Per-agent task channel: where the agent reports task/step status.
+        cmd.env("EVORIDE_TASKS", &tasks_path);
+        // Read-only: the open tasks for THIS project, so the agent can find what
+        // to work on (a JSON snapshot EvorIDE refreshes on spawn/resume).
+        cmd.env("EVORIDE_PROJECT_TASKS", &project_tasks_path);
 
         let child = pair
             .slave

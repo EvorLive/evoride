@@ -3,7 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
 
 /// The app's real version (from tauri.conf.json, which the release workflow
@@ -27,14 +27,25 @@ export interface AgentRecord {
   status: "running" | "exited" | "archived";
 }
 
+export interface Step {
+  id: string;
+  title: string;
+  status: "todo" | "doing" | "done";
+}
+
 export interface Task {
   id: string;
   /** Owning project id, or "" when unassigned. */
   project_id: string;
   title: string;
-  status: "todo" | "doing" | "done";
+  /** Lifecycle: todo → doing → done → verified (mapped to the board on sync). */
+  status: "todo" | "doing" | "done" | "verified";
   agent_id: string | null;
   created_at: number;
+  /** Longer free-text detail (maps to Jira/Notion/evor.live description). */
+  description?: string | null;
+  /** Architect breakdown — ordered, individually-tracked steps. */
+  steps?: Step[];
   planned_for?: string | null;
   source?: string;
   external_id?: string | null;
@@ -136,13 +147,127 @@ export const addTask = (
   title: string,
   agentId?: string,
   plannedFor?: string,
-) => invoke<Task>("add_task", { projectId, title, agentId, plannedFor });
+  description?: string,
+) => invoke<Task>("add_task", { projectId, title, agentId, plannedFor, description });
 export const updateTask = (id: string, status: Task["status"]) =>
   invoke("update_task", { id, status });
+/// Turn a freeform note into structured tasks via the AI helper (claude/codex),
+/// auto-matching each to a project. Returns the created tasks (planned for today).
+export const planTasks = (input: string) =>
+  invoke<Task[]>("plan_tasks", { input });
+/// Set a task's long-form description.
+export const setTaskDescription = (id: string, description: string) =>
+  invoke("set_task_description", { id, description });
+/// Replace a task's breakdown steps.
+export const setTaskSteps = (id: string, steps: Step[]) =>
+  invoke("set_task_steps", { id, steps });
+/// Toggle/update a single step's status; returns the updated task.
+export const updateStep = (taskId: string, stepId: string, status: Step["status"]) =>
+  invoke<Task | null>("update_step", { taskId, stepId, status });
+/// Architect breakdown of a task into steps via the AI helper. Returns the task.
+export const breakdownTask = (id: string) => invoke<Task>("breakdown_task", { id });
+/// Apply an agent's reported task updates: auto-creates a task when the agent
+/// declares new work (`{"new_task":…}`), then reconciles status/steps/notes.
+/// Returns every task touched this round (created or updated) to upsert.
+export const ingestAgentTasks = (project: string, agentId: string) =>
+  invoke<Task[]>("ingest_agent_tasks", { project, agentId });
+/// Link a task to the agent now working it.
+export const linkTaskAgent = (id: string, agentId: string) =>
+  invoke("link_task_agent", { id, agentId });
+/// Let the AI helper assign currently-unassigned tasks to a project by matching
+/// their wording to project names/repos. Returns how many it placed.
+export const autoAssignTasks = () => invoke<number>("auto_assign_tasks");
 /// Assign a task to a project ("" = unassigned).
 export const assignTask = (id: string, projectId: string) =>
   invoke("assign_task", { id, projectId });
 export const deleteTask = (id: string) => invoke("delete_task", { id });
+/** Append a line to a task's description (e.g. merge a duplicate's wording in). */
+export const appendTaskNote = (id: string, note: string) =>
+  invoke("append_task_note", { id, note });
+export interface DuplicateHit {
+  task_id: string;
+  task_title: string;
+  task_status: Task["status"];
+  reason: string;
+}
+/** AI check: does `title` duplicate an existing task? null = no clear duplicate
+ *  (also null when no AI helper is configured, so creation never blocks). */
+export const checkDuplicateTask = (title: string, projectId: string) =>
+  invoke<DuplicateHit | null>("check_duplicate_task", { title, projectId });
+
+// --- Jira (two-way task sync) ---
+export interface JiraConfigPublic {
+  base_url: string;
+  email: string;
+  jql: string;
+  project_map: Record<string, string>;
+  has_token: boolean;
+}
+export interface JiraSyncResult {
+  pulled: number;
+  created: number;
+  updated: number;
+  unmapped: number;
+}
+/** Current Jira config (never includes the token — only `has_token`). */
+export const jiraConfigGet = () =>
+  invoke<JiraConfigPublic | null>("jira_config_get");
+/** Save the Jira connection. Leave `token` blank to keep the stored one. */
+export const jiraConfigSet = (cfg: {
+  baseUrl: string;
+  email: string;
+  token: string;
+  jql: string;
+  projectMap: Record<string, string>;
+}) =>
+  invoke("jira_config_set", {
+    baseUrl: cfg.baseUrl,
+    email: cfg.email,
+    token: cfg.token,
+    jql: cfg.jql,
+    projectMap: cfg.projectMap,
+  });
+export const jiraDisconnect = () => invoke("jira_disconnect");
+/** Verify the connection; resolves to the issue count the JQL matches. */
+export const jiraTest = () => invoke<number>("jira_test");
+/** Pull issues → tasks (upsert by key). Resolves with a summary of changes. */
+export const jiraSync = () => invoke<JiraSyncResult>("jira_sync");
+
+/** A Jira issue assigned to me (live), and whether it's already imported. */
+export interface JiraIssue {
+  key: string;
+  summary: string;
+  status: Task["status"];
+  /** Real Jira status name (e.g. "In Review"). */
+  status_name: string;
+  description: string | null;
+  project_key: string;
+  url: string;
+  imported: boolean;
+}
+/** The issues currently assigned to me on Jira (live fetch). */
+export const jiraMyIssues = () => invoke<JiraIssue[]>("jira_my_issues");
+/** Import one Jira issue into the board as an (Unassigned) task. Pass
+ *  `plannedFor` (YYYY-MM-DD) to schedule it (e.g. "import to today"). */
+export const jiraImport = (issue: JiraIssue, plannedFor?: string) =>
+  invoke<Task | null>("jira_import", {
+    key: issue.key,
+    summary: issue.summary,
+    status: issue.status,
+    description: issue.description,
+    url: issue.url,
+    plannedFor,
+  });
+export interface JiraProject {
+  key: string;
+  name: string;
+}
+/** Jira projects the account can file into (for the push-to-Jira picker). */
+export const jiraProjects = () => invoke<JiraProject[]>("jira_projects");
+/** Push a local task up to Jira: creates an issue (in `projectKey`, or the
+ *  mapped project) and links the task. Rejects if already linked. */
+export const jiraCreateFromTask = (id: string, projectKey?: string) =>
+  invoke<Task>("jira_create_from_task", { id, projectKey });
 
 // --- files ---
 export const readDir = (path: string) => invoke<FileEntry[]>("read_dir", { path });
@@ -194,7 +319,14 @@ export interface Service {
   port?: number;
   url?: string;
   ready_when?: string;
+  /// Computed by the backend: true only when `command` is a recognized dev tool
+  /// launched by bare name. Untrusted services (from a repo or AI-generated
+  /// config) are NOT auto-run and require an explicit confirmation to spawn.
+  trusted?: boolean;
 }
+/// Native confirm dialog used before spawning an untrusted run command.
+export const confirmRun = (message: string) =>
+  confirm(message, { title: "Run this command?", kind: "warning" });
 export const runConfig = (projectId: string, path: string) =>
   invoke<Service[]>("run_config", { projectId, path });
 export const createRunConfig = (path: string) =>
@@ -230,10 +362,32 @@ export const agentEditCounts = (project: string) =>
 // --- settings & daily summaries ---
 export interface Settings {
   daily_summary: boolean;
+  skills_disabled?: string[];
 }
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setDailySummary = (enabled: boolean) =>
   invoke<Settings>("set_daily_summary", { enabled });
+
+// --- skills ---
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  builtin: boolean;
+}
+/// Bundled skills with their current enabled state (Settings → Skills).
+export const listSkills = () => invoke<SkillInfo[]>("list_skills");
+/// Toggle a bundled skill: persists and installs/removes it for every agent CLI.
+export const setSkillEnabled = (id: string, enabled: boolean) =>
+  invoke("set_skill_enabled", { id, enabled });
+/// Install a skill from a git repo via Claude Code (clones, validates it's a safe
+/// SKILL.md skill, installs it). Resolves with a status line; rejects with the
+/// reason it was refused.
+export const installSkillFromGit = (repo: string) =>
+  invoke<string>("install_skill_from_git", { repo });
+/// Remove a git-installed (external) skill.
+export const removeSkill = (id: string) => invoke("remove_skill", { id });
 export const dailySummary = (date?: string) =>
   invoke<string>("daily_summary", { date });
 export const dailySummaryAi = (date?: string, force?: boolean) =>

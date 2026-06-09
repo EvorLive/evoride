@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import type { AgentRecord, ClaudeSession, GitStatus } from "../lib/tauri";
 import type { CliDef } from "../lib/clis";
 
@@ -32,6 +32,9 @@ export default function AgentsColumn({
   onUnarchive,
   onContinueSession,
   onRename,
+  onHome,
+  homeActive = false,
+  projectName,
 }: {
   agents: AgentRecord[];
   archived: AgentRecord[];
@@ -57,11 +60,32 @@ export default function AgentsColumn({
   onUnarchive: (id: string) => void;
   onContinueSession: (s: ClaudeSession) => void;
   onRename: (id: string, title: string) => void;
+  /** Go to the project overview/home page. */
+  onHome?: () => void;
+  /** Whether the overview/home page is currently showing. */
+  homeActive?: boolean;
+  /** Current project name (shown on the home button). */
+  projectName?: string;
 }) {
   const [showArchived, setShowArchived] = useState(false);
+  const [showOffline, setShowOffline] = useState(false);
   const [title, setTitle] = useState("");
   const [command, setCommand] = useState("");
   const [adding, setAdding] = useState(false);
+
+  // Live agents float to the top, ranked by urgency (needs-you, then working,
+  // then idle), and within a rank by when they first started — so a long-running
+  // worker that drifted to the bottom climbs back up. Stopped (offline) agents
+  // drop into a compacted, collapsed section so the live ones stay front-and-center.
+  const { liveAgents, offlineAgents } = useMemo(() => {
+    const liveAgents: AgentRecord[] = [];
+    const offlineAgents: AgentRecord[] = [];
+    for (const a of agents) (live.has(a.id) ? liveAgents : offlineAgents).push(a);
+    const rank = (a: AgentRecord) =>
+      waiting.has(a.id) ? 0 : states[a.id] === "passive" ? 2 : 1;
+    liveAgents.sort((a, b) => rank(a) - rank(b) || a.created_at - b.created_at);
+    return { liveAgents, offlineAgents };
+  }, [agents, live, waiting, states]);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -73,6 +97,16 @@ export default function AgentsColumn({
 
   return (
     <div className="agents">
+      {onHome && (
+        <button
+          className={`agents-home ${homeActive ? "active" : ""}`}
+          onClick={onHome}
+          title={projectName ? `${projectName} — overview & tasks` : "Project overview & tasks"}
+        >
+          <span className="agents-home-icon">⌂</span>
+          <span className="agents-home-name">Project home</span>
+        </button>
+      )}
       <div className="agents-head">
         <span>Agents</span>
         {git?.is_repo && git.dirty > 0 && (
@@ -83,10 +117,11 @@ export default function AgentsColumn({
       </div>
 
       <ul className="agents-list">
-        {agents.map((a) => {
-          const isLive = live.has(a.id);
+        {liveAgents.map((a) => {
+          const isLive = true;
           const isWaiting = waiting.has(a.id);
-          const isPassive = !isWaiting && isLive && states[a.id] === "passive";
+          const isPassive = !isWaiting && states[a.id] === "passive";
+          const isWorking = !isWaiting && !isPassive;
           return (
             <li key={a.id}>
               <div
@@ -116,6 +151,11 @@ export default function AgentsColumn({
                     {isWaiting && (
                       <span className="agent-wait-pill" title="Actively waiting — needs your input">
                         needs you
+                      </span>
+                    )}
+                    {isWorking && (
+                      <span className="agent-work-pill" title="Working — producing output">
+                        working
                       </span>
                     )}
                     {isPassive && (
@@ -187,7 +227,65 @@ export default function AgentsColumn({
           );
         })}
         {agents.length === 0 && <li className="agents-empty">No agents yet</li>}
+        {liveAgents.length === 0 && offlineAgents.length > 0 && (
+          <li className="agents-empty">No agents running</li>
+        )}
       </ul>
+
+      {offlineAgents.length > 0 && (
+        <div className="offline-section">
+          <button className="offline-head" onClick={() => setShowOffline((s) => !s)}>
+            {showOffline ? "▾" : "▸"} Offline ({offlineAgents.length})
+          </button>
+          {showOffline && (
+            <ul className="offline-list">
+              {offlineAgents.map((a) => (
+                <li key={a.id} className="offline-item">
+                  <span className="dot dot-dead" />
+                  <button
+                    className="offline-title"
+                    title={`${a.title} — click to resume`}
+                    onClick={() => onSelect(a.id)}
+                  >
+                    {a.title}
+                  </button>
+                  <span className="offline-ago">{fmtAgo(a.created_at)}</span>
+                  <button
+                    className="agent-resume"
+                    title="Resume (relaunch + continue)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onResume(a);
+                    }}
+                  >
+                    ↻
+                  </button>
+                  <button
+                    className="agent-extra"
+                    title="Archive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onArchive(a.id);
+                    }}
+                  >
+                    ⊟
+                  </button>
+                  <button
+                    className="agent-extra del"
+                    title="Delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(a.id);
+                    }}
+                  >
+                    🗑
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {adding ? (
         <div className="agent-new">

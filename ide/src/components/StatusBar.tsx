@@ -19,7 +19,6 @@ function fmtK(n: number): string {
 export default function StatusBar({
   git,
   version,
-  projectName,
   activeAgent,
   live,
   model,
@@ -58,11 +57,6 @@ export default function StatusBar({
     <footer className="statusbar">
       <div className="status-left">
         <span className="status-ver">EvorIDE{version ? ` v${version}` : ""}</span>
-        {projectName && (
-          <span className="status-proj" title={`Project: ${projectName}`}>
-            ▮ {projectName}
-          </span>
-        )}
         {git?.is_repo ? (
           <>
             <span className="status-branch-wrap">

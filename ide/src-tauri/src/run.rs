@@ -21,6 +21,51 @@ pub struct Service {
     /// Optional regex matching a "ready" line in the service's output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready_when: Option<String>,
+    /// Whether this service's `command` is safe to spawn automatically. Computed
+    /// (never read from the config file) — true only when the program is a known
+    /// dev-tool launched by bare name. The UI auto-runs trusted services and asks
+    /// for explicit confirmation before spawning an untrusted one. This is the
+    /// guard against a prompt-injected / malicious-repo run config choosing an
+    /// arbitrary program to execute (e.g. `sh -c '<payload>'` or `./evil`).
+    ///
+    /// `skip_deserializing` (NOT `skip`): the value is always recomputed and
+    /// never honored from the on-disk config — so a malicious runinfo.json can't
+    /// claim `"trusted": true` — but it IS serialized into the command response
+    /// so the UI can decide whether to auto-run or ask for confirmation.
+    #[serde(default, skip_deserializing)]
+    pub trusted: bool,
+}
+
+/// Programs we consider safe to spawn from a (possibly AI-generated or
+/// repo-supplied) run config without an explicit user confirmation. Must be a
+/// bare command name — an absolute/relative path (`/tmp/x/node`, `./payload`) or
+/// a shell (`sh`, `bash`, `zsh`) is intentionally NOT trusted, since those are
+/// exactly how an attacker-controlled config would smuggle in code execution.
+const TRUSTED_PROGRAMS: &[&str] = &[
+    "npm", "pnpm", "yarn", "bun", "npx", "pnpx", "node", "deno", "vite", "next", "nest", "ng",
+    "nodemon", "tsx", "ts-node", "cargo", "go", "air", "python", "python3", "pip", "pip3",
+    "uvicorn", "gunicorn", "flask", "django-admin", "poetry", "uv", "pdm", "hatch", "rye", "ruby",
+    "bundle", "rake", "rails", "puma", "rackup", "php", "composer", "artisan", "dotnet", "mvn",
+    "gradle", "make", "just", "task", "docker", "docker-compose", "podman", "flutter", "dart",
+    "elixir", "mix", "iex",
+];
+
+/// True when `command`'s program token is a bare, allow-listed dev tool.
+fn command_is_trusted(command: &str) -> bool {
+    let prog = command.split_whitespace().next().unwrap_or("");
+    !prog.is_empty()
+        && !prog.contains('/')
+        && !prog.contains('\\')
+        && TRUSTED_PROGRAMS.contains(&prog)
+}
+
+/// Stamp each service's `trusted` flag from its command. Applied at the boundary
+/// where services are returned to the UI/spawn layer.
+fn mark_trust(mut services: Vec<Service>) -> Vec<Service> {
+    for s in &mut services {
+        s.trusted = command_is_trusted(&s.command);
+    }
+    services
 }
 
 /// Absolute path to the per-machine, AI-generated run config for a project:
@@ -40,7 +85,7 @@ pub fn read_runinfo(project_id: &str) -> Option<Vec<Service>> {
 /// Services for a project, by precedence: AI runinfo (`~/.evoride/{id}/...`) →
 /// committed repo `.evoride/run.json` → built-in auto-detect.
 pub fn services_for(project_id: &str, path: &str) -> Vec<Service> {
-    read_runinfo(project_id).unwrap_or_else(|| read_config(path))
+    mark_trust(read_runinfo(project_id).unwrap_or_else(|| read_config(path)))
 }
 
 /// The instruction EvorIDE hands an agent so it investigates how to run the
@@ -51,12 +96,16 @@ pub fn setup_instruction(project_id: &str) -> String {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     format!(
-        "EvorIDE: figure out how to RUN this project for local development. Inspect \
-package.json scripts (+ workspaces / pnpm-workspace.yaml), Cargo.toml, Dockerfile / \
-docker-compose.yml, Makefile, Procfile, etc. Prefer Docker if a compose file defines the \
-dev stack; verify required tools exist (e.g. run `which docker`). IMPORTANT: if this is a \
-MONOREPO with several runnable apps/services, include ONE entry per app in `services` \
-(e.g. 4 apps -> 4 entries), each with its own name, command, cwd, and port/url. Then WRITE \
+        "EvorIDE (autopilot): figure out how to RUN this project for local development and \
+configure it YOURSELF — work autonomously, do NOT ask me questions or for confirmation, just \
+do it. Inspect package.json scripts (+ workspaces / pnpm-workspace.yaml), Cargo.toml, \
+Dockerfile / docker-compose.yml, Makefile, Procfile, etc. Prefer Docker if a compose file \
+defines the dev stack; verify required tools exist (e.g. run `which docker`). IMPORTANT: if \
+this is a MONOREPO with several runnable apps/services, include ONE entry per app in \
+`services` (e.g. 4 apps -> 4 entries), each with its own name, command, cwd, and port/url. \
+EACH service's `command` is run FROM its `cwd` (EvorIDE cd's there first), so if an app lives \
+in a subdirectory (e.g. `ide/`, `apps/web`) set `cwd` to that subdir and write the command as \
+if already inside it (do NOT prefix with `cd`). Use empty string for the repo root. Then WRITE \
 the run config as JSON to `{runinfo}` (create the directory) with this exact shape: {{\
 \"generated_by\":\"<your model>\",\"services\":[{{\"name\":\"web\",\"command\":\"<exact \
 shell command to start it>\",\"cwd\":\"<dir relative to project root, empty string for \
@@ -100,7 +149,7 @@ pub fn create_config(path: &str) -> Result<Vec<Service>, String> {
     };
     let json = serde_json::to_string_pretty(&rc).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("run.json"), json).map_err(|e| e.to_string())?;
-    Ok(services)
+    Ok(mark_trust(services))
 }
 
 fn fallback_services(path: &str) -> Vec<Service> {

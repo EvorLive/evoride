@@ -112,7 +112,14 @@ pub fn diff(cwd: &str, file: Option<&str>) -> String {
     }
 
     if s.len() > MAX_DIFF {
-        s.truncate(MAX_DIFF);
+        // Truncate on a UTF-8 char boundary — a blind `truncate(MAX_DIFF)` panics
+        // (and takes down the git_diff handler) if MAX_DIFF lands mid-codepoint,
+        // which an untrusted diff can arrange.
+        let mut cut = MAX_DIFF;
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
         s.push_str("\n… (diff truncated)");
     }
     s
@@ -148,16 +155,31 @@ pub fn branches(cwd: &str) -> Branches {
     Branches { current, all }
 }
 
+/// Reject branch/ref names that git would parse as an option (leading `-`), so a
+/// crafted name like `--upload-pack=…` or any `-`-prefixed flag can't be smuggled
+/// in as a git argument. (For `checkout` a literal `--` separator can't be used —
+/// it would make git treat the name as a *pathspec* instead of a ref — so
+/// rejecting option-looking names is the correct guard.)
+fn safe_ref(name: &str) -> Result<&str, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("branch name is empty".into());
+    }
+    if n.starts_with('-') {
+        return Err("invalid branch name".into());
+    }
+    Ok(n)
+}
+
 /// Checkout an existing branch.
 pub fn checkout(cwd: &str, branch: &str) -> Result<String, String> {
+    let branch = safe_ref(branch)?;
     run_git(cwd, &["checkout", branch])
 }
 
 /// Create and switch to a new branch.
 pub fn create_branch(cwd: &str, name: &str) -> Result<String, String> {
-    if name.trim().is_empty() {
-        return Err("branch name is empty".into());
-    }
+    let name = safe_ref(name)?;
     run_git(cwd, &["checkout", "-b", name])
 }
 

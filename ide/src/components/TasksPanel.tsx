@@ -5,6 +5,7 @@ const PILL: Record<Task["status"], string> = {
   todo: "pill-todo",
   doing: "pill-doing",
   done: "pill-done",
+  verified: "pill-done",
 };
 
 // Right panel: the project's plan as a simple task list.

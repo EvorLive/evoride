@@ -1,8 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ProjectRail from "./components/ProjectRail";
 import AgentsColumn from "./components/AgentsColumn";
-import SessionLauncher from "./components/SessionLauncher";
+import ProjectHome from "./components/ProjectHome";
+import JiraProjectPicker from "./components/JiraProjectPicker";
 import RunControl from "./components/RunControl";
+import NewAgentMenu from "./components/NewAgentMenu";
 import StatusBar from "./components/StatusBar";
 import HomeView from "./components/HomeView";
 import HomeBar from "./components/HomeBar";
@@ -10,16 +12,15 @@ import SettingsDialog from "./components/SettingsDialog";
 import RunSetupDialog from "./components/RunSetupDialog";
 import CommandPalette, { type Command } from "./components/CommandPalette";
 import { loadAgents, saveAgents, enabledClis, type AgentConfig } from "./lib/agents";
+import { autopilotCommand } from "./lib/clis";
 import * as demo from "./lib/demo";
 // Heavy / on-demand components are code-split (xterm, editor, diff, panels).
 const GridWorkspace = lazy(() => import("./components/GridWorkspace"));
-const TasksView = lazy(() => import("./components/TasksView"));
 const AgentTerminal = lazy(() => import("./components/AgentTerminal"));
 const Editor = lazy(() => import("./components/Editor"));
 const DiffView = lazy(() => import("./components/DiffView"));
 const FileExplorer = lazy(() => import("./components/FileExplorer"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
-const IntentPanel = lazy(() => import("./components/IntentPanel"));
 const TasksPanel = lazy(() => import("./components/TasksPanel"));
 const EditsPanel = lazy(() => import("./components/EditsPanel"));
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -47,7 +48,7 @@ function FolderIcon() {
 }
 import "./App.css";
 
-const NEXT_STATUS = { todo: "doing", doing: "done", done: "todo" } as const;
+const NEXT_STATUS = { todo: "doing", doing: "done", done: "verified", verified: "todo" } as const;
 
 /** Max terminals per workspace — keeps each layout (full/split/3-way/quad) clean. */
 const MAX_TILES = 4;
@@ -61,7 +62,7 @@ interface Workspace {
 export default function App() {
   // Top-level view: the cross-project Home dashboard, or the single-project
   // workspace. Defaults to Home on launch when projects exist.
-  const [view, setView] = useState<"home" | "workspace" | "grid" | "tasks">("home");
+  const [view, setView] = useState<"home" | "workspace" | "grid">("home");
   // The IDE is scoped to a single project.
   const [project, setProject] = useState<Project | null>(null);
   const [agents, setAgents] = useState<AgentRecord[]>([]);
@@ -72,8 +73,8 @@ export default function App() {
   // Agent ids whose terminal is currently popped out into its own window.
   const [poppedOut, setPoppedOut] = useState<Set<string>>(new Set());
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
-  // One right-side panel at a time (git/plan/intent/files/edits), or none.
-  type RightPanel = "git" | "plan" | "intent" | "files" | "edits";
+  // One right-side panel at a time (git/plan/files/edits), or none.
+  type RightPanel = "git" | "plan" | "files" | "edits";
   const [rightPanel, setRightPanel] = useState<RightPanel | null>("git");
   // Center shows the agent terminal or the file editor (never side by side).
   const [centerMode, setCenterMode] = useState<"terminal" | "editor">("terminal");
@@ -86,7 +87,6 @@ export default function App() {
   const [usage, setUsage] = useState<ClaudeUsage | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [knownProjects, setKnownProjects] = useState<Project[]>([]);
-  const [intentEnabled, setIntentEnabled] = useState(false);
   // Latest URL detected in each agent's output (for the "Open URL" button).
   const [urlByAgent, setUrlByAgent] = useState<Record<string, string>>({});
   // Agents that exited with a detected issue → fix context.
@@ -183,6 +183,16 @@ export default function App() {
     localStorage.setItem("evoride-judge", judgeEnabled ? "1" : "0");
   }, [judgeEnabled]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "jira">("general");
+  // AI dedupe gate: when creating a task that looks like a duplicate, hold the
+  // pending creation here and ask the user (merge / create anyway / cancel).
+  const [dup, setDup] = useState<
+    { hit: api.DuplicateHit; title: string; projectId: string; create: () => void } | null
+  >(null);
+  const openSettings = (tab: "general" | "agents" | "jira" = "general") => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  };
   // User-configurable agent registry (enable + path), persisted.
   const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>(loadAgents);
   useEffect(() => saveAgents(agentConfigs), [agentConfigs]);
@@ -269,7 +279,6 @@ export default function App() {
     api.listTasks(project.id).then(setTasks).catch(() => {});
     api.claudeSessions(project.path).then(setSessions).catch(() => {});
     api.runConfig(project.id, project.path).then(setServices).catch(() => setServices([]));
-    api.intentConfig(project.path).then((c) => setIntentEnabled(c.enabled)).catch(() => {});
     setOpenFiles([]);
     setActiveFile(null);
   }, [project, refreshAgents]);
@@ -339,14 +348,12 @@ export default function App() {
     };
   }, [project]);
 
-  // Keep a sensible active agent.
+  // Keep a sensible active agent: hold the current one while it still exists,
+  // otherwise fall back to the project overview/home (null) rather than auto-
+  // jumping into a running agent — the overview is the project's landing page.
   useEffect(() => {
-    setActiveAgentId((prev) => {
-      if (prev && agents.some((a) => a.id === prev)) return prev;
-      const firstLive = agents.find((a) => live.has(a.id));
-      return firstLive ? firstLive.id : null;
-    });
-  }, [agents, live]);
+    setActiveAgentId((prev) => (prev && agents.some((a) => a.id === prev) ? prev : null));
+  }, [agents]);
 
   const addLive = (id: string) => setLive((p) => new Set(p).add(id));
   const removeLive = (id: string) =>
@@ -521,7 +528,7 @@ export default function App() {
           setView("home");
           break;
         case "settings":
-          setSettingsOpen(true);
+          openSettings();
           break;
       }
     }).then((u) => {
@@ -556,20 +563,60 @@ export default function App() {
     api.allTasks().then(setAllTasksList).catch(() => {});
   }, []);
   useEffect(() => {
-    if (view === "tasks") refreshAllTasks();
+    if (view === "home") refreshAllTasks();
   }, [view, refreshAllTasks]);
+  // AI dedupe gate: before creating, ask the helper if this duplicates an
+  // existing task; if so, prompt (merge / create anyway / cancel). `create` is
+  // the real creation closure, run only when the user proceeds.
+  const guardedAdd = (title: string, projectId: string, create: () => void) => {
+    api
+      .checkDuplicateTask(title, projectId)
+      .then((hit) => {
+        if (hit) setDup({ hit, title, projectId, create });
+        else create();
+      })
+      .catch(() => create()); // never block creation on a helper hiccup
+  };
   const addTaskGlobal = (title: string, projectId: string, plannedFor: string) =>
-    api.addTask(projectId, title, undefined, plannedFor).then(refreshAllTasks).catch(() => {});
-  const cycleTaskGlobal = (t: Task) =>
+    guardedAdd(title, projectId, () =>
+      void api.addTask(projectId, title, undefined, plannedFor).then(refreshAllTasks).catch(() => {}),
+    );
+  // A Jira-linked task syncs its status back to the issue, so confirm first —
+  // "this is a Jira task, should I update Jira too?". Non-Jira tasks pass through.
+  const jiraCycleOk = (t: Task) =>
+    t.source !== "jira" ||
+    window.confirm(
+      `“${t.title}” is linked to Jira${t.external_id ? ` (${t.external_id})` : ""}. ` +
+        `Updating it to “${NEXT_STATUS[t.status]}” will also update the Jira issue. Continue?`,
+    );
+  const cycleTaskGlobal = (t: Task) => {
+    if (!jiraCycleOk(t)) return;
     api.updateTask(t.id, NEXT_STATUS[t.status]).then(refreshAllTasks).catch(() => {});
+  };
   const assignTaskGlobal = (id: string, projectId: string) =>
     api.assignTask(id, projectId).then(refreshAllTasks).catch(() => {});
   const delTaskGlobal = (id: string) =>
     api.deleteTask(id).then(refreshAllTasks).catch(() => {});
+  /// Freeform note → AI helper extracts tasks + matches projects. Resolves to the
+  /// created tasks (or throws with a message TasksView surfaces inline).
+  const planTasksGlobal = async (note: string) => {
+    const created = await api.planTasks(note);
+    refreshAllTasks();
+    return created;
+  };
   const renameAgent = (id: string, title: string) => {
     api.setAgentTitle(id, title).catch(() => {});
     setAgents((prev) => prev.map((a) => (a.id === id ? { ...a, title } : a)));
     setRunningList((prev) => prev.map((a) => (a.id === id ? { ...a, title } : a)));
+  };
+  // Live terminal title (OSC) → reflect immediately everywhere the title shows
+  // (toolbar, agents list). Normalized + capped; skips no-op updates.
+  const autoTitleAgent = (id: string, raw: string) => {
+    const title = raw.replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!title) return;
+    const cur = agents.find((a) => a.id === id)?.title;
+    if (cur === title) return;
+    renameAgent(id, title);
   };
 
   // Reset the center diff when switching project.
@@ -625,6 +672,63 @@ export default function App() {
 
   const newAgent = (title: string, command: string) =>
     void launch({ title, command: command || undefined });
+
+  // Spawn an agent and, once it's up, hand it an initial prompt (bracketed paste
+  // preserves newlines). Shared by "Work on this task" / "Brainstorm".
+  const startAgentWithPrompt = async (title: string, command: string, prompt: string) => {
+    const rec = await launch({ title, command });
+    if (!rec) return null;
+    window.setTimeout(() => {
+      api
+        .writeInput(rec.id, `\x1b[200~${prompt}\x1b[201~`)
+        .then(() => api.writeInput(rec.id, "\r"))
+        .catch(() => {});
+    }, 1500);
+    return rec;
+  };
+  // Hand a task to an agent to implement; link it so the agent's reported status
+  // flows back, and mark it in-progress.
+  const workOnTask = async (t: Task, command: string) => {
+    const prompt = `Please work on this task:\n\n${t.title}${t.description ? `\n\n${t.description}` : ""}${
+      t.steps && t.steps.length ? `\n\nSteps:\n${t.steps.map((s, i) => `${i + 1}. ${s.title}`).join("\n")}` : ""
+    }\n\nStart by finding the relevant code, sketch a brief plan, then implement it. Update your task status via $EVORIDE_TASKS as you go. Ask me if anything is ambiguous.`;
+    const rec = await startAgentWithPrompt(`▶ ${t.title}`, command, prompt);
+    if (rec) api.linkTaskAgent(t.id, rec.id).catch(() => {});
+    if (t.status === "todo") cycleTask(t);
+  };
+  // Hand a task to an agent to think through — no code changes yet.
+  const brainstormTask = async (t: Task, command: string) => {
+    const prompt = `Let's brainstorm this task before changing any code:\n\n${t.title}${t.description ? `\n\n${t.description}` : ""}\n\nPropose 2–3 approaches with trade-offs, ask any clarifying questions, and recommend one. Don't edit files yet.`;
+    const rec = await startAgentWithPrompt(`💡 ${t.title}`, command, prompt);
+    if (rec) api.linkTaskAgent(t.id, rec.id).catch(() => {});
+  };
+  // Return to the project's overview/home page (deselect the focused agent — it
+  // keeps running in the Agents column).
+  const goProjectHome = () => {
+    setActiveAgentId(null);
+    setDiffView(null);
+    setCenterMode("terminal");
+  };
+  // Work/brainstorm a task from anywhere (e.g. the Home page): open the task's
+  // project, then once its tasks load, hand it to the agent. Unassigned → no-op.
+  const pendingWorkRef = useRef<{ taskId: string; command: string; brainstorm: boolean } | null>(null);
+  const workTaskAnywhere = (t: Task, command: string, brainstorm: boolean) => {
+    const p = knownProjects.find((kp) => kp.id === t.project_id);
+    if (!p) return;
+    pendingWorkRef.current = { taskId: t.id, command, brainstorm };
+    setProject(p);
+    setView("workspace");
+  };
+  useEffect(() => {
+    const pend = pendingWorkRef.current;
+    if (!pend || !project) return;
+    const t = tasks.find((x) => x.id === pend.taskId);
+    if (!t || t.project_id !== project.id) return; // wait for this project's tasks
+    pendingWorkRef.current = null;
+    if (pend.brainstorm) void brainstormTask(t, pend.command);
+    else void workOnTask(t, pend.command);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, tasks]);
   const continueSession = (s: ClaudeSession) =>
     void launch({ title: s.summary, command: `claude --resume ${s.id}` });
 
@@ -681,7 +785,32 @@ export default function App() {
   };
 
   // --- run services ---
+  // Each service maps to a single, persistent terminal (the agent whose title is
+  // the service name). Derived from the agent list so it survives stop/restart and
+  // app reloads — restarting a service REUSES its terminal (keeps the logs), and
+  // its console stays viewable even after it stops.
+  const serviceAgentId = useCallback(
+    (name: string) => agents.find((a) => a.title === name)?.id,
+    [agents],
+  );
   const startService = async (s: Service) => {
+    const existing = serviceAgentId(s.name);
+    if (existing) {
+      // Reuse the same terminal (same cwd + command, scrollback preserved).
+      await resumeExisting(existing);
+      setRunningServices((prev) => ({ ...prev, [s.name]: existing }));
+      return;
+    }
+    // Untrusted command (not a recognized dev tool — may be repo- or AI-supplied):
+    // show exactly what would run and require explicit confirmation first.
+    if (!s.trusted) {
+      const ok = await api.confirmRun(
+        `EvorIDE wants to run “${s.name}”:\n\n${s.command}\n\nin ${
+          s.cwd || "the project root"
+        }\n\nThis isn't a recognized dev-tool command, so it could come from the repository or an AI-generated config. Run it?`,
+      );
+      if (!ok) return;
+    }
     const rec = await launch({
       title: s.name,
       command: s.command || undefined,
@@ -690,13 +819,21 @@ export default function App() {
     if (rec) setRunningServices((prev) => ({ ...prev, [s.name]: rec.id }));
   };
   const stopService = (s: Service) => {
-    const id = runningServices[s.name];
-    if (id) void closeAgent(id);
+    const id = runningServices[s.name] ?? serviceAgentId(s.name);
+    if (id) void closeAgent(id); // kills the pty but KEEPS the tile + logs
     setRunningServices((prev) => {
       const n = { ...prev };
       delete n[s.name];
       return n;
     });
+  };
+  // Bring a service's terminal forward to read its console/logs (running or not).
+  const viewService = (s: Service) => {
+    const id = serviceAgentId(s.name);
+    if (id) {
+      setDiffView(null);
+      setActiveAgentId(id);
+    }
   };
   const refreshRunConfig = async () => {
     if (!project) return;
@@ -717,7 +854,9 @@ export default function App() {
     const prompt = extra ? `${base} Also: ${extra.replace(/\s+/g, " ").trim()}` : base;
     const label = enabledAgentClis.find((c) => c.command === command)?.label ?? "agent";
     const before = JSON.stringify(services); // so we only react to the NEW config
-    const rec = await launch({ title: `Set up run · ${label}`, command });
+    // Autopilot: run the agent fully autonomously so it configures (and can run)
+    // everything without the user accepting each step — they just watch.
+    const rec = await launch({ title: `Set up run · ${label}`, command: autopilotCommand(command) });
     if (!rec) return;
     // Give the agent a moment to come up, then send the (single-line) instruction.
     window.setTimeout(() => void api.writeInput(rec.id, `${prompt}\r`), 1800);
@@ -727,11 +866,17 @@ export default function App() {
     const iv = window.setInterval(async () => {
       tries += 1;
       const svcs = await api.runConfig(pid, project.path).catch(() => [] as typeof services);
-      const ready = svcs.filter((s) => s.command.trim());
-      if (ready.length && JSON.stringify(svcs) !== before) {
+      const landed = svcs.some((s) => s.command.trim()) && JSON.stringify(svcs) !== before;
+      if (landed) {
         window.clearInterval(iv);
         setServices(svcs);
-        ready.forEach((s) => void startService(s)); // run after it completes
+        // Auto-run ONLY recognized dev-tool commands. A repo- or AI-generated
+        // config could name an arbitrary program, so anything untrusted is left
+        // for the user to start via the Run button (which confirms first) — the
+        // guard against prompt-injection → silent command execution.
+        svcs
+          .filter((s) => s.command.trim() && s.trusted)
+          .forEach((s) => void startService(s));
       } else if (tries > 90) {
         window.clearInterval(iv); // ~3 min cap
       }
@@ -748,18 +893,28 @@ export default function App() {
   const closeAgent = async (id: string) => {
     await api.closeAgent(id).catch(() => {});
     removeLive(id);
+    // Drop it from the running poll right away so project/agent dots agree.
+    setRunningList((prev) => prev.filter((a) => a.id !== id));
+    // Don't strand the user on a stopped window saying "isn't running" — move
+    // focus to another live agent (or clear it if none are left).
+    if (activeAgentId === id) {
+      const next = agents.find((a) => a.id !== id && live.has(a.id));
+      setActiveAgentId(next ? next.id : null);
+    }
     if (project) refreshAgents(project.id);
   };
 
   const archiveAgentH = async (id: string) => {
     await api.archiveAgent(id).catch(() => {});
     removeLive(id);
+    clearWaiting(id); // archived agents must not keep a "waiting for you" flag
     if (activeAgentId === id) setActiveAgentId(null);
     if (project) refreshAgents(project.id);
   };
   const deleteAgentH = async (id: string) => {
     await api.deleteAgent(id).catch(() => {});
     removeLive(id);
+    clearWaiting(id);
     if (activeAgentId === id) setActiveAgentId(null);
     setAgents((prev) => prev.filter((a) => a.id !== id));
   };
@@ -787,17 +942,13 @@ export default function App() {
       });
       if (project) {
         refreshAgents(project.id);
-        // Session ended → derive the intent doc.
-        if (intentEnabled) api.updateIntent(project.path).catch(() => {});
       }
     },
-    [project, refreshAgents, intentEnabled],
+    [project, refreshAgents],
   );
 
-  // Keep the intent doc in sync with the code right before a commit.
-  const beforeCommit = useCallback(async () => {
-    if (project && intentEnabled) await api.updateIntent(project.path).catch(() => {});
-  }, [project, intentEnabled]);
+  // Hook that runs right before a commit (currently a no-op).
+  const beforeCommit = useCallback(async () => {}, []);
 
   // Global exit listener so background (discarded) agents update too.
   const handleExitRef = useRef(handleExit);
@@ -984,9 +1135,12 @@ export default function App() {
 
   const addTask = (title: string) => {
     if (!project) return;
-    api.addTask(project.id, title).then((t) => setTasks((p) => [...p, t]));
+    guardedAdd(title, project.id, () =>
+      void api.addTask(project.id, title).then((t) => setTasks((p) => [...p, t])),
+    );
   };
   const cycleTask = (t: Task) => {
+    if (!jiraCycleOk(t)) return;
     const next = NEXT_STATUS[t.status];
     api.updateTask(t.id, next).then(() =>
       setTasks((p) => p.map((x) => (x.id === t.id ? { ...x, status: next } : x))),
@@ -994,6 +1148,99 @@ export default function App() {
   };
   const delTask = (id: string) =>
     api.deleteTask(id).then(() => setTasks((p) => p.filter((x) => x.id !== id)));
+  // Replace a task in local state (after a backend mutation returns the new row).
+  const patchTask = (t: Task | null) => {
+    if (!t) return;
+    setTasks((p) => p.map((x) => (x.id === t.id ? t : x)));
+    setAllTasksList((p) => p.map((x) => (x.id === t.id ? t : x)));
+  };
+  // Push a local task up to Jira. Pick the board: the project's mapping if there's
+  // exactly one, otherwise prompt with a picker (just-do-it when unambiguous).
+  const [jiraPush, setJiraPush] = useState<{ task: Task; projects: api.JiraProject[] } | null>(null);
+  const createJiraIssue = (id: string, projectKey?: string) =>
+    api
+      .jiraCreateFromTask(id, projectKey)
+      .then(patchTask)
+      .catch((e) =>
+        window.alert(typeof e === "string" ? e : (e as Error)?.message || "Couldn't create the Jira issue."),
+      );
+  const pushTaskToJira = async (t: Task) => {
+    const [cfg, projects] = await Promise.all([
+      api.jiraConfigGet().catch(() => null),
+      api.jiraProjects().catch(() => [] as api.JiraProject[]),
+    ]);
+    if (!cfg) {
+      window.alert("Connect Jira first (Settings → Jira).");
+      return;
+    }
+    const mappedKeys = Object.entries(cfg.project_map)
+      .filter(([, pid]) => pid === t.project_id)
+      .map(([k]) => k);
+    const candidates = mappedKeys.length
+      ? projects.filter((p) => mappedKeys.includes(p.key))
+      : projects;
+    if (candidates.length === 1) {
+      void createJiraIssue(t.id, candidates[0].key); // unambiguous → just do it
+    } else if (candidates.length === 0) {
+      window.alert("No Jira projects available to file into.");
+    } else {
+      setJiraPush({ task: t, projects: candidates }); // multiple → let the user pick
+    }
+  };
+  const jiraPicker = (
+    <JiraProjectPicker
+      open={!!jiraPush}
+      taskTitle={jiraPush?.task.title ?? ""}
+      projects={jiraPush?.projects ?? []}
+      onClose={() => setJiraPush(null)}
+      onPick={(key) => {
+        if (jiraPush) void createJiraIssue(jiraPush.task.id, key);
+        setJiraPush(null);
+      }}
+    />
+  );
+  const setTaskDesc = (id: string, description: string) => {
+    api.setTaskDescription(id, description).then(() => {
+      setTasks((p) => p.map((x) => (x.id === id ? { ...x, description } : x)));
+      setAllTasksList((p) => p.map((x) => (x.id === id ? { ...x, description } : x)));
+    });
+  };
+  const breakdownTaskH = (id: string) => api.breakdownTask(id).then(patchTask);
+  const toggleStepH = (taskId: string, stepId: string, status: "todo" | "doing" | "done") =>
+    void api.updateStep(taskId, stepId, status).then(patchTask);
+
+  // Upsert tasks returned by an ingest poll: replace existing rows, prepend ones
+  // the agent just created so they appear on the board immediately.
+  const upsertTasks = useCallback((rows: Task[]) => {
+    if (!rows.length) return;
+    const merge = (list: Task[]) => {
+      const byId = new Map(list.map((t) => [t.id, t]));
+      const fresh: Task[] = [];
+      for (const r of rows) {
+        if (byId.has(r.id)) byId.set(r.id, r);
+        else fresh.push(r);
+      }
+      return [...fresh, ...Array.from(byId.values())];
+    };
+    setTasks((p) => merge(p));
+    setAllTasksList((p) => merge(p));
+  }, []);
+
+  // Pull agents' self-reported task activity (via $EVORIDE_TASKS) and fold it
+  // back onto the board: status/step progress on linked tasks, AND tasks the
+  // agent auto-creates when it starts new work. Poll every live agent in the
+  // project (not just already-linked ones) so brand-new tasks get picked up.
+  useEffect(() => {
+    if (!project) return;
+    const path = project.path;
+    const iv = setInterval(() => {
+      if (document.hidden) return;
+      for (const a of agents) {
+        if (live.has(a.id)) api.ingestAgentTasks(path, a.id).then(upsertTasks).catch(() => {});
+      }
+    }, 4000);
+    return () => clearInterval(iv);
+  }, [project, agents, live, upsertTasks]);
 
   const activeAgents = useMemo(
     () => agents.filter((a) => a.status !== "archived"),
@@ -1006,11 +1253,29 @@ export default function App() {
   const activeRec = agents.find((a) => a.id === activeAgentId) ?? null;
   const activeIsLive = activeAgentId ? live.has(activeAgentId) : false;
 
+  // Agents currently live in THIS project — surfaced on the landing page so you
+  // can see/jump to what's working without opening the rail.
+  const projectAgentsWorking = useMemo(
+    () =>
+      agents
+        .filter((a) => live.has(a.id))
+        .map((a) => ({ id: a.id, title: a.title, waiting: waitingAgents.has(a.id) })),
+    [agents, live, waitingAgents],
+  );
+
   const runningServiceMap = useMemo(() => {
     const m: Record<string, boolean> = {};
     for (const [name, id] of Object.entries(runningServices)) m[name] = live.has(id);
     return m;
   }, [runningServices, live]);
+
+  // Which services have a terminal to inspect (running OR stopped-with-logs).
+  const viewableServiceMap = useMemo(() => {
+    const titles = new Set(agents.map((a) => a.title));
+    const m: Record<string, boolean> = {};
+    for (const s of services) m[s.name] = titles.has(s.name);
+    return m;
+  }, [agents, services]);
 
   // Claude sessions already running in THIS window (launched via --resume <id>).
   const runningSessionIds = useMemo(() => {
@@ -1034,11 +1299,21 @@ export default function App() {
   }, [activeRec, sessions]);
 
   // Per-project running counts + which projects are waiting for input.
+  // Union the backend poll (`runningList`, all projects, ~3s lag) with the live
+  // set (immediate, this window) so a project's dot turns green the instant an
+  // agent does — matching the agent dot, not trailing it. Dedup by agent id.
   const runningByProject = useMemo(() => {
     const m: Record<string, number> = {};
-    for (const a of runningList) m[a.project_id] = (m[a.project_id] ?? 0) + 1;
+    const counted = new Set<string>();
+    const bump = (pid?: string, id?: string) => {
+      if (!pid || !id || counted.has(id)) return;
+      counted.add(id);
+      m[pid] = (m[pid] ?? 0) + 1;
+    };
+    for (const a of runningList) bump(a.project_id, a.id);
+    for (const a of agents) if (live.has(a.id)) bump(a.project_id, a.id);
     return m;
-  }, [runningList]);
+  }, [runningList, agents, live]);
   const agentProject = useMemo(() => {
     const m: Record<string, string> = {};
     for (const a of runningList) m[a.id] = a.project_id;
@@ -1096,8 +1371,6 @@ export default function App() {
       cmds.push({ id: "home", label: "Go to Home", hint: "View", run: () => setView("home") });
     if (view !== "grid")
       cmds.push({ id: "grid", label: "Open Workspace (grid)", hint: "View", run: () => setView("grid") });
-    if (view !== "tasks")
-      cmds.push({ id: "tasks", label: "Tasks — plan your day", hint: "View", run: () => setView("tasks") });
     if (project && view !== "workspace")
       cmds.push({ id: "back", label: `Back to ${project.name}`, hint: "View", run: () => setView("workspace") });
 
@@ -1147,13 +1420,12 @@ export default function App() {
       cmds.push({ id: "panel-git", label: "Toggle Git panel", hint: "Panel", run: () => setRightPanel((p) => (p === "git" ? null : "git")) });
       cmds.push({ id: "panel-files", label: "Toggle Files panel", hint: "Panel", run: () => setRightPanel((p) => (p === "files" ? null : "files")) });
       cmds.push({ id: "panel-plan", label: "Toggle Plan panel", hint: "Panel", run: () => setRightPanel((p) => (p === "plan" ? null : "plan")) });
-      cmds.push({ id: "panel-intent", label: "Toggle Intent panel", hint: "Panel", run: () => setRightPanel((p) => (p === "intent" ? null : "intent")) });
       cmds.push({ id: "panel-edits", label: "Toggle Edits panel", hint: "Panel", run: () => setRightPanel((p) => (p === "edits" ? null : "edits")) });
     }
 
     // Appearance + settings (always).
     cmds.push({ id: "toggle-theme", label: "Toggle theme", hint: "Appearance", run: cycleTheme });
-    cmds.push({ id: "settings", label: "Settings…", hint: "⌘,", run: () => setSettingsOpen(true) });
+    cmds.push({ id: "settings", label: "Settings…", hint: "⌘,", run: () => openSettings() });
 
     return cmds;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1183,7 +1455,43 @@ export default function App() {
         setJudgeEnabled={setJudgeEnabled}
         agents={agentConfigs}
         setAgents={setAgentConfigs}
+        initialTab={settingsTab}
+        onTasksChanged={refreshAllTasks}
       />
+      {dup && (
+        <div className="set-overlay" onClick={() => setDup(null)} role="dialog" aria-modal="true">
+          <div className="set-modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="set-head">
+              <span className="set-title">Possible duplicate</span>
+              <button className="set-x" onClick={() => setDup(null)} aria-label="Close">✕</button>
+            </div>
+            <div className="set-body">
+              <p className="set-row-hint" style={{ marginBottom: 10 }}>
+                “{dup.title}” looks like it overlaps an existing task:
+              </p>
+              <p style={{ fontWeight: 600, marginBottom: 4 }}>{dup.hit.task_title}</p>
+              {dup.hit.reason && <p className="set-row-hint">{dup.hit.reason}</p>}
+              <div className="jira-actions">
+                <button
+                  className="btn primary"
+                  onClick={() => {
+                    api.appendTaskNote(dup.hit.task_id, dup.title).then(refreshAllTasks).catch(() => {});
+                    setDup(null);
+                  }}
+                >
+                  Merge into existing
+                </button>
+                <button className="btn" onClick={() => { dup.create(); setDup(null); }}>
+                  Create anyway
+                </button>
+                <button className="btn-ghost" onClick={() => setDup(null)} style={{ marginLeft: "auto" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <RunSetupDialog
         open={runSetupOpen}
         onClose={() => setRunSetupOpen(false)}
@@ -1252,7 +1560,6 @@ export default function App() {
             onOpen={openFolder}
             onHome={() => setView("home")}
             onWorkspace={() => setView("grid")}
-            onTasks={() => setView("tasks")}
           />
           <HomeView
             projects={knownProjects}
@@ -1261,23 +1568,38 @@ export default function App() {
             waitingOptions={waitingOptions}
             waitingQuestion={waitingQuestion}
             textModes={waitingTextMode}
-            runningByProject={runningByProject}
-            waitingProjects={waitingProjects}
+            tasks={allTasksList}
+            clis={enabledAgentClis}
+            canPlan={hasJudge}
             onOpenProject={openProjectFromHome}
             onOpenAgent={openAgentFromHome}
             onAccept={acceptAgent}
             onYes={yesAgent}
             onNo={noAgent}
             onPick={pickOption}
+            onAddTask={addTaskGlobal}
+            onCycleTask={(t) => void cycleTaskGlobal(t)}
+            onDeleteTask={(id) => void delTaskGlobal(id)}
+            onAssignTask={(id, pid) => void assignTaskGlobal(id, pid)}
+            onSetDescription={setTaskDesc}
+            onBreakdown={breakdownTaskH}
+            onToggleStep={toggleStepH}
+            onWorkTask={(t, c) => workTaskAnywhere(t, c, false)}
+            onBrainstormTask={(t, c) => workTaskAnywhere(t, c, true)}
+            onPlan={planTasksGlobal}
+            onOpenJira={() => openSettings("jira")}
+            onTasksRefresh={refreshAllTasks}
+            onPushJira={(t) => void pushTaskToJira(t)}
           />
         </div>
+        {jiraPicker}
         <HomeBar
           version={appVer}
           projectCount={knownProjects.length}
           runningCount={runningList.length}
           waitingCount={waitingAgents.size}
           onOpenPalette={() => openPalette("commands")}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => openSettings()}
           theme={theme}
           onCycleTheme={cycleTheme}
         />
@@ -1304,7 +1626,6 @@ export default function App() {
             onOpen={openFolder}
             onHome={() => setView("home")}
             onWorkspace={() => setView("grid")}
-            onTasks={() => setView("tasks")}
           />
           <Suspense fallback={<div className="grid-view" />}>
             <GridWorkspace
@@ -1343,7 +1664,7 @@ export default function App() {
           runningCount={runningList.length}
           waitingCount={waitingAgents.size}
           onOpenPalette={() => openPalette("commands")}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => openSettings()}
           theme={theme}
           onCycleTheme={cycleTheme}
         />
@@ -1353,51 +1674,6 @@ export default function App() {
   }
 
   // Tasks / daily planning across all projects.
-  if (view === "tasks") {
-    return (
-      <div className="ide">
-        <div className="ide-main">
-          <ProjectRail
-            projects={knownProjects}
-            activeId={null}
-            tasksActive
-            runningByProject={runningByProject}
-            waitingProjects={waitingProjects}
-            onSelect={(p) => {
-              setProject(p);
-              setView("workspace");
-            }}
-            onOpen={openFolder}
-            onHome={() => setView("home")}
-            onWorkspace={() => setView("grid")}
-            onTasks={() => setView("tasks")}
-          />
-          <Suspense fallback={<div className="tasks-view" />}>
-            <TasksView
-              tasks={allTasksList}
-              projects={knownProjects}
-              onAdd={addTaskGlobal}
-              onCycle={(t) => void cycleTaskGlobal(t)}
-              onAssign={(id, pid) => void assignTaskGlobal(id, pid)}
-              onDelete={(id) => void delTaskGlobal(id)}
-            />
-          </Suspense>
-        </div>
-        <HomeBar
-          version={appVer}
-          projectCount={knownProjects.length}
-          runningCount={runningList.length}
-          waitingCount={waitingAgents.size}
-          onOpenPalette={() => openPalette("commands")}
-          onOpenSettings={() => setSettingsOpen(true)}
-          theme={theme}
-          onCycleTheme={cycleTheme}
-        />
-        {palette}
-      </div>
-    );
-  }
-
   // Workspace requires an active project; if somehow absent, go Home.
   if (!project) {
     return (
@@ -1429,7 +1705,6 @@ export default function App() {
           onOpen={openFolder}
           onHome={() => setView("home")}
           onWorkspace={() => setView("grid")}
-            onTasks={() => setView("tasks")}
         />
         <AgentsColumn
           agents={activeAgents}
@@ -1461,6 +1736,9 @@ export default function App() {
           onUnarchive={unarchiveAgentH}
           onContinueSession={continueSession}
           onRename={renameAgent}
+          onHome={goProjectHome}
+          homeActive={!activeAgentId && !diffView && !(centerMode === "editor" && openFiles.length > 0)}
+          projectName={project.name}
         />
 
         <main className="main">
@@ -1469,10 +1747,10 @@ export default function App() {
               <button
                 className="tb-name"
                 onClick={() => setMenuOpen((o) => !o)}
-                title="Project menu"
+                title={`${project.name} — project menu`}
+                aria-label={`${project.name} — project menu`}
               >
                 <FolderIcon />
-                <span>{project.name}</span>
                 <span className="tb-caret">▾</span>
               </button>
               {menuOpen && (
@@ -1525,22 +1803,31 @@ export default function App() {
             </span>
 
             <div className="tb-actions">
-              <RunControl
-                services={services}
-                running={runningServiceMap}
-                onStart={startService}
-                onStop={stopService}
-                onCreateConfig={refreshRunConfig}
-                onSetupAi={() => setRunSetupOpen(true)}
+              {/* Services live in their own group, set apart from the terminal/
+                  agent controls so Run reads as "start a service", not "run the
+                  focused terminal". */}
+              <div className="tb-services">
+                <RunControl
+                  services={services}
+                  running={runningServiceMap}
+                  viewable={viewableServiceMap}
+                  onStart={startService}
+                  onStop={stopService}
+                  onView={viewService}
+                  onCreateConfig={refreshRunConfig}
+                  onSetupAi={() => setRunSetupOpen(true)}
+                />
+              </div>
+              <span className="tb-sep" aria-hidden="true" />
+              <NewAgentMenu
+                agents={agentConfigs}
+                onLaunch={(a) => newAgent(a.label, a.command)}
+                onToggle={(id, enabled) =>
+                  setAgentConfigs((prev) =>
+                    prev.map((x) => (x.id === id ? { ...x, enabled } : x)),
+                  )
+                }
               />
-              <button
-                className="btn-sm icon"
-                onClick={() => newAgent("Claude", "claude")}
-                title="New Claude session"
-                aria-label="New Claude session"
-              >
-                ✦
-              </button>
               {activeIsLive && activeAgentId && !poppedOut.has(activeAgentId) && (
                 <>
                   <button
@@ -1593,7 +1880,6 @@ export default function App() {
                   { id: "files", icon: "📁", label: "Files" },
                   { id: "git", icon: "⎇", label: "Git changes" },
                   { id: "plan", icon: "☑", label: "Plan / tasks" },
-                  { id: "intent", icon: "🎯", label: "Intent" },
                   { id: "edits", icon: "✎", label: "Agent edits" },
                 ] as const
               ).map((p) => (
@@ -1666,6 +1952,7 @@ export default function App() {
                     onIssue={(context) =>
                       setLiveIssue({ id: activeAgentId, context })
                     }
+                    onTitle={(title) => autoTitleAgent(activeAgentId, title)}
                   />
                   {liveIssue?.id === activeAgentId && (
                     <button className="fix-overlay" onClick={fixLiveIssue}>
@@ -1693,7 +1980,27 @@ export default function App() {
                 </div>
               ) : (
                 <div className="term-slot launcher-slot">
-                  <SessionLauncher onNew={newAgent} clis={enabledAgentClis} />
+                  <ProjectHome
+                    project={project}
+                    git={git}
+                    tasks={tasks}
+                    clis={enabledAgentClis}
+                    agentsWorking={projectAgentsWorking}
+                    onOpenAgent={(id) => {
+                      setDiffView(null);
+                      setActiveAgentId(id);
+                    }}
+                    onAdd={addTask}
+                    onCycle={cycleTask}
+                    onDelete={(t) => delTask(t.id)}
+                    onWork={(t, c) => void workOnTask(t, c)}
+                    onBrainstorm={(t, c) => void brainstormTask(t, c)}
+                    onNew={newAgent}
+                    onSetDescription={setTaskDesc}
+                    onBreakdown={breakdownTaskH}
+                    onToggleStep={toggleStepH}
+                    onPushJira={(t) => void pushTaskToJira(t)}
+                  />
                 </div>
               )}
             </div>
@@ -1717,7 +2024,6 @@ export default function App() {
                 onBeforeCommit={beforeCommit}
               />
             )}
-            {rightPanel === "intent" && <IntentPanel projectPath={project.path} />}
             {rightPanel === "edits" && (
               <EditsPanel
                 projectPath={project.path}
@@ -1738,6 +2044,7 @@ export default function App() {
         </main>
       </div>
 
+      {jiraPicker}
       <StatusBar
         git={git}
         version={appVer}
@@ -1752,7 +2059,7 @@ export default function App() {
         onCycleTheme={() =>
           setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system"))
         }
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => openSettings()}
         cwd={project?.path ?? null}
         onGitRefresh={refreshGitStatus}
       />

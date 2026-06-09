@@ -75,8 +75,17 @@ and you can [add your own](#add-your-own-agent) in one file.
   navigate between them; background agents keep running (Chrome-style tab discarding keeps
   it fast and restores context on return).
 - ▶️ **Run / Stop** — detects how to run your project; **monorepo-aware** run config
-  (`.evoride/run.json`) to start/stop individual services. Open-in-browser button when a
-  dev server prints a URL.
+  (`.evoride/run.json`) to start/stop individual services. **Autopilot setup** (an agent
+  configures the run for you, hands-free), per-service **View console**, services reuse the
+  same terminal across restarts, and an open-in-browser button when a dev server prints a URL.
+- ✅ **Tasks & daily planning** — per-project + cross-project task board, AI day-planner,
+  architect breakdown into steps, and **AI duplicate detection** (merge / create-anyway when
+  a task already exists). Agents can find their project's tasks via `$EVORIDE_PROJECT_TASKS`.
+- 🔗 **Jira two-way sync** — connect a Jira Cloud site (token in `~/.evoride/secrets.json`);
+  browse the issues assigned to you, **import to Today**, push a local task **up to Jira**, and
+  status changes round-trip back as Jira transitions (with a confirm before updating the issue).
+- 🧩 **Skills** — bundled agent skills you can toggle, plus **install any skill from a git repo**
+  (Claude Code clones, safety-checks, and installs it for every agent CLI).
 - 🔀 **Git built in** — changed files, diffs in the center, **pull/push/merge**, and
   **"Ask the agent to commit & push"** (or do it directly).
 - 🎯 **Intent docs (IntentFlow)** — a committed `.intentflow/` capturing vision + a timeline,
@@ -177,10 +186,14 @@ The full tracked plan lives in the repo: [`.intentflow/roadmap.md`](.intentflow/
 
 - ✅ Multi-project, multi-agent, run/stop, git, intent docs, fix-this-issue, edit tracking,
   themes, terminal discarding, waiting-for-input detection, command palette (⌘P / ⌘⇧P)
-- 🚧 **AI run setup** — when a project's run isn't detected (Docker, monorepos, custom
-  toolchains), an agent analyzes it and generates a run config at
+- ✅ **AI run setup (autopilot)** — when a project's run isn't detected (Docker, monorepos,
+  custom toolchains), an agent analyzes it hands-free and generates a run config at
   `~/.evoride/{project}/runinfo.json` that EvorIDE uses to start it.
   → [plan](.intentflow/plans/ai-run-config.md)
+- ✅ **Tasks on the dashboard** — per-project + cross-project task board on Home, with AI
+  planning, step breakdown, and duplicate detection
+- ✅ **Jira integration** — two-way sync between Jira issues and tasks (import, push, transitions)
+- ✅ **Skills from a git repo** — install/enable agent skills from any repo via Claude Code
 - 🚧 **Persistent agents** — agents survive the IDE crashing *or* closing and re-attach on
   reopen (tmux/screen-backed), so long runs aren't lost. *(coming up)*
 - 🚧 **Remote control for the IDE** — drive your running IDE and its agents from the web
@@ -193,10 +206,8 @@ The full tracked plan lives in the repo: [`.intentflow/roadmap.md`](.intentflow/
 - ⬜ **Cross-terminal notifications** — OS notification + in-app toast when a background or
   other-window agent starts waiting, so you don't have to go back to find it
 - ⬜ **Open from Git** — clone a repo URL and open it directly as a project
-- ⬜ **Tasks on the dashboard** — per-project tasks surfaced (cross-project) on Home
 - ⬜ **Cross-project memory** — let Claude reference another workspace project's intent docs
   + summary + edits as context
-- ⬜ **Jira integration** — two-way sync between Jira issues and tasks
 - ⬜ **Reminders** — manage reminders in the IDE with due-time notifications
 - ⬜ **Per-project permission profiles** — "ask / guarded allow-all / YOLO" per project with
   a deny-list for destructive ops, and a default agent (claude/codex) per project

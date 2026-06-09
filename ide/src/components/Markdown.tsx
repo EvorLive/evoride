@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 // Render markdown safely. `marked` + `dompurify` are imported dynamically so
 // they're a lazily-loaded chunk (not in the initial bundle).
@@ -21,5 +22,19 @@ export default function Markdown({ text }: { text: string }) {
     };
   }, [text]);
 
-  return <div className="md-body" dangerouslySetInnerHTML={{ __html: html }} />;
+  // A link in rendered markdown (which can come from AI output, repo files, or a
+  // Jira description) must NEVER navigate the app's own webview — that would
+  // replace the IDE or enable phishing. Intercept every click: open http(s)
+  // links in the OS browser via the opener plugin, and ignore anything else.
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const anchor = (e.target as HTMLElement).closest("a");
+    if (!anchor) return;
+    e.preventDefault();
+    const href = anchor.getAttribute("href") ?? "";
+    if (/^https?:\/\//i.test(href)) void openUrl(href);
+  };
+
+  return (
+    <div className="md-body" onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />
+  );
 }

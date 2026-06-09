@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -106,6 +106,7 @@ export default function AgentTerminal({
   onUrl,
   onIssue,
   onInput,
+  onTitle,
 }: {
   id: string;
   active: boolean;
@@ -116,18 +117,66 @@ export default function AgentTerminal({
   onIssue?: (context: string) => void;
   /** Fires when the user types into this terminal (to clear "needs you"). */
   onInput?: () => void;
+  /** Fires when the program sets the terminal title (OSC 0/2) — e.g. Claude
+   *  updating its task title — so the UI can reflect it live. */
+  onTitle?: (title: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const onUrlRef = useRef(onUrl);
   onUrlRef.current = onUrl;
+  const onTitleRef = useRef(onTitle);
+  onTitleRef.current = onTitle;
   const onIssueRef = useRef(onIssue);
   onIssueRef.current = onIssue;
   const onInputRef = useRef(onInput);
   onInputRef.current = onInput;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+
+  // Right-click context menu (viewport coords + whether there's a selection).
+  const [menu, setMenu] = useState<{ x: number; y: number; hasSel: boolean } | null>(null);
+
+  const doCopy = () => {
+    const t = termRef.current;
+    if (t?.hasSelection()) navigator.clipboard?.writeText(t.getSelection()).catch(() => {});
+    setMenu(null);
+  };
+  const doPaste = () => {
+    navigator.clipboard
+      ?.readText()
+      .then((t) => t && writeInput(id, t))
+      .catch(() => {});
+    setMenu(null);
+  };
+  const doSelectAll = () => {
+    termRef.current?.selectAll();
+    setMenu(null);
+  };
+  const doClear = () => {
+    termRef.current?.clear();
+    termRef.current?.focus();
+    setMenu(null);
+  };
+
+  // Dismiss the menu on any outside click, scroll, Escape, or window blur.
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    // `click` (not mousedown) so a menu item's own onClick fires first.
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
 
   // Recolor the live terminal when the IDE switches light/dark (no recreate).
   useEffect(() => {
@@ -157,6 +206,13 @@ export default function AgentTerminal({
       void writeInput(id, data);
     });
 
+    // Live title: xterm parses OSC 0/2 title sequences for us. Claude (and other
+    // agents) set this as they work — surface it so the tab/toolbar update at once.
+    term.onTitleChange((t) => {
+      const title = t.trim();
+      if (title) onTitleRef.current?.(title);
+    });
+
     // Copy / paste. ⌘C (mac) or Ctrl+Shift+C copies the selection; ⌘V (mac) or
     // Ctrl+Shift+V pastes into the pty. Returning false stops xterm/the pty from
     // also seeing the key (so ⌘C doesn't send ^C).
@@ -179,13 +235,12 @@ export default function AgentTerminal({
       return true;
     });
 
-    // Right-click to paste (the global context menu is suppressed elsewhere).
+    // Right-click opens a context menu (Copy / Paste / Select All / Clear). The
+    // global context menu is suppressed elsewhere, so this is the one place it
+    // appears. Anchor it to the cursor and note whether there's a selection.
     const onContext = (ev: MouseEvent) => {
       ev.preventDefault();
-      navigator.clipboard
-        ?.readText()
-        .then((t) => t && writeInput(id, t))
-        .catch(() => {});
+      setMenu({ x: ev.clientX, y: ev.clientY, hasSel: term.hasSelection() });
     };
     host.addEventListener("contextmenu", onContext);
 
@@ -280,5 +335,37 @@ export default function AgentTerminal({
   // Host stays transparent over the pane (var(--bg)); the terminal's slightly
   // translucent background composites over it — a subtle distinction, no
   // mismatched third color in the padding/fit gap.
-  return <div ref={hostRef} className="term-host" />;
+  return (
+    <>
+      <div ref={hostRef} className="term-host" />
+      {menu && (
+        <div
+          className="term-ctx"
+          style={{ left: menu.x, top: menu.y }}
+          // Stop the window `click`/`contextmenu` closers from firing for clicks
+          // landing inside the menu itself.
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+          role="menu"
+        >
+          <button className="term-ctx-item" role="menuitem" disabled={!menu.hasSel} onClick={doCopy}>
+            <span>Copy</span>
+            <span className="term-ctx-key">⌘C</span>
+          </button>
+          <button className="term-ctx-item" role="menuitem" onClick={doPaste}>
+            <span>Paste</span>
+            <span className="term-ctx-key">⌘V</span>
+          </button>
+          <button className="term-ctx-item" role="menuitem" onClick={doSelectAll}>
+            <span>Select All</span>
+            <span className="term-ctx-key">⌘A</span>
+          </button>
+          <div className="term-ctx-sep" />
+          <button className="term-ctx-item" role="menuitem" onClick={doClear}>
+            <span>Clear</span>
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
