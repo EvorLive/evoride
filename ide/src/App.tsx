@@ -163,6 +163,11 @@ export default function App() {
   }, []);
   const termMode: "light" | "dark" =
     theme === "system" ? (prefersDark ? "dark" : "light") : theme;
+  // Match the NATIVE window chrome (macOS titlebar / traffic-light bar) to the
+  // resolved mode, so it isn't a white bar in dark mode.
+  useEffect(() => {
+    getCurrentWindow().setTheme(termMode).catch(() => {});
+  }, [termMode]);
   // One-time: clear the old, fumble-prone auto-pin key so nobody is stuck on top.
   useEffect(() => {
     localStorage.removeItem("evoride-pinned");

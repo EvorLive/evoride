@@ -161,27 +161,6 @@ pub fn fetch_top(cfg: &JiraConfig, limit: u32) -> Result<Vec<JiraIssue>, String>
     Ok(out)
 }
 
-/// Fetch a single issue by key (for importing just that one).
-pub fn fetch_issue(cfg: &JiraConfig, key: &str) -> Result<JiraIssue, String> {
-    let c = client()?;
-    let url = format!(
-        "{}/rest/api/3/issue/{}?fields=summary,status,description,project",
-        base(cfg),
-        key
-    );
-    let resp = c
-        .get(&url)
-        .header("Authorization", auth_header(cfg))
-        .header("Accept", "application/json")
-        .send()
-        .map_err(|e| format!("Jira request failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("Jira {}: couldn't read {key}", resp.status()));
-    }
-    let json: Value = resp.json().map_err(|e| format!("Jira bad JSON: {e}"))?;
-    parse_issue(&json, &base(cfg)).ok_or_else(|| format!("Jira {key} had no usable fields"))
-}
-
 /// List the Jira projects the account can see, as `(key, name)` — for the
 /// "which board?" picker when pushing a task up.
 pub fn list_projects(cfg: &JiraConfig) -> Result<Vec<(String, String)>, String> {

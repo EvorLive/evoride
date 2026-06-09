@@ -2,12 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "w-*"],
+  "windows": ["main", "w-*", "term-*"],
   "permissions": [
     "core:default",
     "core:menu:default",
     "core:window:allow-set-title",
     "core:window:allow-set-always-on-top",
+    "core:window:allow-set-theme",
     "opener:default",
     "dialog:default"
   ]
