@@ -1,27 +1,55 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
+import CodeMirror from "@uiw/react-codemirror";
+import { vscodeDark, vscodeLight } from "@uiw/codemirror-theme-vscode";
+import { loadLanguage, type LanguageName } from "@uiw/codemirror-extensions-langs";
 import { readFile, writeFile, type FileContent, type FileEntry } from "../lib/tauri";
 import Markdown from "./Markdown";
 
 const isMd = (path: string) => /\.(md|markdown|mdx)$/i.test(path);
 
-// Right-center tabbed editor: edit + save files, with a Markdown preview toggle.
+// The langs registry is keyed largely by file extension (rs, py, tsx, cpp, …),
+// so the extension itself is usually the language key. A few need an alias.
+const LANG_ALIAS: Record<string, string> = {
+  mjs: "js", cjs: "js", jsonc: "json", htm: "html", zsh: "sh",
+  cxx: "cpp", hpp: "cpp", hh: "cpp", mdx: "md", markdown: "md", yml: "yaml",
+};
+
+function languageExtensions(path: string) {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const key = (LANG_ALIAS[ext] ?? ext) as LanguageName;
+  const lang = loadLanguage(key); // null for unknown extensions → no highlighting
+  return lang ? [lang] : [];
+}
+
+// Right-center tabbed editor: edit + save files with syntax highlighting
+// (CodeMirror) + a Markdown preview toggle. Files open as a single "preview"
+// (temporary) tab — shown in italics — that the next single-click reuses;
+// double-clicking the tab/file or editing it makes the tab permanent.
 export default function Editor({
   files,
   activePath,
+  previewPath,
   onActivate,
   onClose,
+  onMakePermanent,
+  mode = "dark",
 }: {
   files: FileEntry[];
   activePath: string | null;
+  /** Path of the temporary/preview tab (italic), if any. */
+  previewPath?: string | null;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
+  /** Pin a tab (e.g. double-clicked or edited) so it's no longer temporary. */
+  onMakePermanent?: (path: string) => void;
+  /** IDE color mode so the editor theme matches. */
+  mode?: "light" | "dark";
 }) {
   const [meta, setMeta] = useState<Record<string, FileContent>>({});
   const [saved, setSaved] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [rawMd, setRawMd] = useState(false);
   const [busy, setBusy] = useState(false);
-  const taRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (activePath && meta[activePath] === undefined) {
@@ -59,7 +87,7 @@ export default function Editor({
     }
   };
 
-  const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       void save();
@@ -72,12 +100,14 @@ export default function Editor({
         {files.map((f) => {
           const fDirty =
             meta[f.path] && !meta[f.path].binary && draft[f.path] !== saved[f.path];
+          const isPreview = f.path === previewPath;
           return (
             <div
               key={f.path}
-              className={`etab ${f.path === activePath ? "active" : ""}`}
+              className={`etab ${f.path === activePath ? "active" : ""} ${isPreview ? "preview" : ""}`}
               onClick={() => onActivate(f.path)}
-              title={f.path}
+              onDoubleClick={() => onMakePermanent?.(f.path)}
+              title={isPreview ? `${f.path} — preview (double-click to keep open)` : f.path}
             >
               <span className="etab-name">{f.name}</span>
               {fDirty && <span className="etab-dot" title="unsaved">●</span>}
@@ -121,17 +151,23 @@ export default function Editor({
             <Markdown text={draft[activePath] ?? m?.content ?? ""} />
           </div>
         ) : (
-          <textarea
-            ref={taRef}
-            className="code-edit"
-            spellCheck={false}
-            readOnly={!editable}
-            value={draft[activePath] ?? m?.content ?? ""}
-            onChange={(e) =>
-              setDraft((p) => ({ ...p, [activePath]: e.target.value }))
-            }
-            onKeyDown={onKey}
-          />
+          <div className="editor-cm" onKeyDown={onKey}>
+            <CodeMirror
+              value={draft[activePath] ?? m?.content ?? ""}
+              theme={mode === "light" ? vscodeLight : vscodeDark}
+              extensions={languageExtensions(activePath)}
+              editable={editable}
+              readOnly={!editable}
+              height="100%"
+              style={{ height: "100%" }}
+              basicSetup={{ highlightActiveLine: editable, foldGutter: true }}
+              onChange={(val) => {
+                if (!editable) return;
+                setDraft((p) => ({ ...p, [activePath]: val }));
+                if (previewPath === activePath) onMakePermanent?.(activePath);
+              }}
+            />
+          </div>
         )}
         {m?.truncated && (
           <div className="editor-note">

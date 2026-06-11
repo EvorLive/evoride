@@ -1879,6 +1879,43 @@ body {
   flex-direction: column;
   background: var(--bg);
 }
+/* CodeMirror surface fills the editor body. */
+.editor-cm {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.editor-cm .cm-editor {
+  height: 100%;
+}
+.editor-cm .cm-editor.cm-focused {
+  outline: none;
+}
+.editor-cm .cm-scroller {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+/* Preview (temporary) tab — italic, like VSCode. */
+.etab.preview .etab-name {
+  font-style: italic;
+}
+/* VSCode codicons in the explorer + toolbar folder button. */
+.tree-glyph .codicon {
+  font-size: 15px;
+  line-height: 1;
+  color: var(--fg-muted);
+}
+.tree-row.is-dir .tree-glyph .codicon {
+  color: var(--fg);
+}
+.tree-chevron .codicon {
+  font-size: 14px;
+  line-height: 1;
+}
+.tb-name .codicon {
+  font-size: 15px;
+  line-height: 1;
+}
 .editor-empty {
   flex: 1;
   display: flex;

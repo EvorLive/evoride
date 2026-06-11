@@ -40,11 +40,8 @@ import type {
 } from "./lib/tauri";
 
 function FolderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    </svg>
-  );
+  // VSCode codicon folder glyph (same icon font as the explorer).
+  return <i className="codicon codicon-folder" aria-hidden="true" />;
 }
 import "./App.css";
 
@@ -219,16 +216,40 @@ export default function App() {
   // Open file tabs for the right-side editor.
   const [openFiles, setOpenFiles] = useState<FileEntry[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
+  // VSCode-style preview: at most one "temporary" tab (shown italic). A single
+  // click opens here and reuses this slot; double-click or editing pins it.
+  const [previewFile, setPreviewFile] = useState<string | null>(null);
 
-  const openFile = (e: FileEntry) => {
-    setOpenFiles((prev) =>
-      prev.some((f) => f.path === e.path) ? prev : [...prev, e],
-    );
+  const openFile = (e: FileEntry, opts?: { preview?: boolean }) => {
+    const preview = opts?.preview ?? false;
+    const alreadyOpen = openFiles.some((f) => f.path === e.path);
+    // Already a permanent tab → just focus it (a preview click never demotes it).
+    if (alreadyOpen && previewFile !== e.path) {
+      setActiveFile(e.path);
+      setCenterMode("editor");
+      setDiffView(null);
+      if (!preview) setPreviewFile((cur) => (cur === e.path ? null : cur));
+      return;
+    }
+    setOpenFiles((prev) => {
+      let next = prev;
+      // Reuse the preview slot: drop the old temporary tab when opening a new one.
+      if (preview && previewFile && previewFile !== e.path) {
+        next = next.filter((f) => f.path !== previewFile);
+      }
+      if (!next.some((f) => f.path === e.path)) next = [...next, e];
+      return next;
+    });
+    setPreviewFile((cur) => (preview ? e.path : cur === e.path ? null : cur));
     setActiveFile(e.path);
     setCenterMode("editor"); // file opens in the center (replaces terminal)
     setDiffView(null);
   };
-  const closeFile = (path: string) =>
+  // Pin a tab so it's no longer temporary (double-click or first edit).
+  const makeFilePermanent = (path: string) =>
+    setPreviewFile((cur) => (cur === path ? null : cur));
+  const closeFile = (path: string) => {
+    setPreviewFile((cur) => (cur === path ? null : cur));
     setOpenFiles((prev) => {
       const next = prev.filter((f) => f.path !== path);
       setActiveFile((cur) =>
@@ -237,6 +258,7 @@ export default function App() {
       if (next.length === 0) setCenterMode("terminal");
       return next;
     });
+  };
 
   const demoOn = demo.isDemo();
 
@@ -1926,8 +1948,11 @@ export default function App() {
                   <Editor
                     files={openFiles}
                     activePath={activeFile}
+                    previewPath={previewFile}
                     onActivate={setActiveFile}
                     onClose={closeFile}
+                    onMakePermanent={makeFilePermanent}
+                    mode={termMode}
                   />
                 </div>
               ) : activeIsLive && activeAgentId && poppedOut.has(activeAgentId) ? (

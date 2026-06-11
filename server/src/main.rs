@@ -5,6 +5,8 @@
 //! current scrollback snapshot followed by the live stream. The relay never
 //! parses the terminal bytes — it only buffers scrollback and fans out frames.
 
+mod api;
+mod db;
 mod hub;
 
 use axum::Router;
@@ -18,11 +20,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
+use db::Db;
 use hub::{AppState, Frame};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let state = Arc::new(AppState::new());
+    // The notification inbox + accounts live in Postgres; the live relay stays
+    // in-memory. Connecting here also runs the idempotent schema migration.
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://evor:evor@localhost:5432/evor".to_string());
+    let db = Db::connect(&database_url).await.map_err(|e| {
+        anyhow::anyhow!("failed to connect to Postgres at {database_url}: {e}")
+    })?;
+    let state = Arc::new(AppState::new(db));
 
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
 
@@ -32,12 +42,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/produce/{id}", get(produce_ws))
         .route("/view/{id}", get(view_ws))
         .route("/control/{id}", get(control_ws))
+        .merge(api::routes())
         .layer(cors)
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", DEFAULT_PORT);
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("eterm relay listening on http://{addr}");
+    println!("evor relay + dashboard API listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }

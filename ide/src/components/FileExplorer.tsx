@@ -10,22 +10,25 @@ function TreeNode({
 }: {
   entry: FileEntry;
   depth: number;
-  onOpen: (e: FileEntry) => void;
+  onOpen: (e: FileEntry, opts?: { preview?: boolean }) => void;
   activePath: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [children, setChildren] = useState<FileEntry[] | null>(null);
 
-  const toggle = () => {
-    if (entry.is_dir) {
-      const next = !open;
-      setOpen(next);
-      if (next && children === null) {
-        readDir(entry.path).then(setChildren).catch(() => setChildren([]));
-      }
-    } else {
-      onOpen(entry);
+  const expand = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && children === null) {
+      readDir(entry.path).then(setChildren).catch(() => setChildren([]));
     }
+  };
+
+  // VSCode behavior: single-click a file opens it as a temporary "preview" tab;
+  // double-click opens it permanently. Directories just expand/collapse.
+  const onRowClick = () => (entry.is_dir ? expand() : onOpen(entry, { preview: true }));
+  const onRowDouble = () => {
+    if (!entry.is_dir) onOpen(entry, { preview: false });
   };
 
   return (
@@ -35,13 +38,22 @@ function TreeNode({
           activePath === entry.path ? "active" : ""
         }`}
         style={{ paddingLeft: 8 + depth * 13 }}
-        onClick={toggle}
+        onClick={onRowClick}
+        onDoubleClick={onRowDouble}
         title={entry.name}
       >
         <span className="tree-chevron">
-          {entry.is_dir ? (open ? "▾" : "▸") : ""}
+          {entry.is_dir ? (
+            <i className={`codicon codicon-chevron-${open ? "down" : "right"}`} />
+          ) : null}
         </span>
-        <span className="tree-glyph">{entry.is_dir ? (open ? "📂" : "📁") : "📄"}</span>
+        <span className="tree-glyph">
+          <i
+            className={`codicon codicon-${
+              entry.is_dir ? (open ? "folder-opened" : "folder") : "file"
+            }`}
+          />
+        </span>
         <span className="tree-name">{entry.name}</span>
       </button>
       {open &&
@@ -65,7 +77,7 @@ export default function FileExplorer({
   activePath,
 }: {
   root: string;
-  onOpenFile: (e: FileEntry) => void;
+  onOpenFile: (e: FileEntry, opts?: { preview?: boolean }) => void;
   activePath: string | null;
 }) {
   const [tree, setTree] = useState<FileEntry[]>([]);

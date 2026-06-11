@@ -1,6 +1,7 @@
 //! In-memory session registry. Each session has a capped scrollback buffer and
 //! a broadcast channel that fans live frames out to all attached viewers.
 
+use crate::db::Db;
 use serde::Serialize;
 use shared::{Control, SessionMeta};
 use std::collections::HashMap;
@@ -52,12 +53,16 @@ struct Hub {
 
 pub struct AppState {
     sessions: Mutex<HashMap<String, Hub>>,
+    /// Durable store for accounts, devices, and the notification inbox. The
+    /// relay half above stays in-memory; this is the persistent half.
+    pub db: Db,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(db: Db) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            db,
         }
     }
 
