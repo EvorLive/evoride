@@ -1376,11 +1376,6 @@ fn set_daily_summary(settings: State<SettingsStore>, enabled: bool) -> Settings 
     settings.set_daily_summary(enabled)
 }
 
-#[tauri::command]
-fn set_auto_continue_rate_limit(settings: State<SettingsStore>, enabled: bool) -> Settings {
-    settings.set_auto_continue_rate_limit(enabled)
-}
-
 // --- skills ---
 
 /// Bundled skills with their current enabled state, for Settings → Skills.
@@ -1716,7 +1711,6 @@ pub fn run() {
             open_window,
             get_settings,
             set_daily_summary,
-            set_auto_continue_rate_limit,
             list_skills,
             set_skill_enabled,
             remove_skill,
