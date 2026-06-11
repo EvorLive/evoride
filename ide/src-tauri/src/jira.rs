@@ -366,32 +366,3 @@ pub fn apply_transition(cfg: &JiraConfig, key: &str, id: &str) -> Result<(), Str
     }
     Ok(())
 }
-
-/// Post a comment on an issue (ADF wrapping a single paragraph).
-pub fn add_comment(cfg: &JiraConfig, key: &str, body: &str) -> Result<(), String> {
-    let c = client()?;
-    let url = format!("{}/rest/api/3/issue/{}/comment", base(cfg), key);
-    let adf = serde_json::json!({
-        "body": {
-            "type": "doc",
-            "version": 1,
-            "content": [{
-                "type": "paragraph",
-                "content": [{ "type": "text", "text": body }]
-            }]
-        }
-    });
-    let resp = c
-        .post(&url)
-        .header("Authorization", auth_header(cfg))
-        .header("Accept", "application/json")
-        .json(&adf)
-        .send()
-        .map_err(|e| format!("Jira comment failed: {e}"))?;
-    if !resp.status().is_success() {
-        let code = resp.status();
-        let text = resp.text().unwrap_or_default();
-        return Err(format!("Jira {code}: {}", text.chars().take(200).collect::<String>()));
-    }
-    Ok(())
-}

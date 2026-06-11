@@ -537,15 +537,14 @@ fn add_task(
 async fn update_task(store: State<'_, Store>, id: String, status: String) -> Result<(), String> {
     store.update_task(&id, &status);
     // Two-way sync: a Jira-sourced task pushes its new lifecycle state back as a
-    // Jira transition (AI-mapped onto this board's custom workflow) AND a comment,
-    // so the ticket's history shows what happened. Best-effort + off-thread.
+    // Jira transition (AI-mapped onto this board's custom workflow). Status only —
+    // no comment is posted. Best-effort + off-thread.
     if let Some(task) = store.get_task(&id) {
         if task.source == "jira" {
             if let (Some(key), Some(cfg)) = (task.external_id, secrets::load_jira()) {
                 let st = status.clone();
-                let title = task.title.clone();
                 let _ = tauri::async_runtime::spawn_blocking(move || {
-                    jira_push_status(&cfg, &key, &st, &title)
+                    jira_push_status(&cfg, &key, &st)
                 })
                 .await;
             }
@@ -555,35 +554,29 @@ async fn update_task(store: State<'_, Store>, id: String, status: String) -> Res
 }
 
 /// Push a lifecycle change onto a Jira issue: transition it (AI-mapped onto the
-/// board's actual workflow, falling back to the status-category heuristic) and
-/// leave a comment recording the change. All best-effort.
-fn jira_push_status(cfg: &secrets::JiraConfig, key: &str, status: &str, title: &str) {
+/// board's actual workflow, falling back to the status-category heuristic).
+/// Transition only — no comment. All best-effort.
+fn jira_push_status(cfg: &secrets::JiraConfig, key: &str, status: &str) {
     // Prefer an AI mapping from our lifecycle word → this board's transition.
-    let applied = match jira::list_transitions(cfg, key) {
+    match jira::list_transitions(cfg, key) {
         Ok(trs) if !trs.is_empty() => {
             let opts: Vec<String> = trs
                 .iter()
                 .map(|t| format!("{} → {} [{}]", t.name, t.to_status, t.to_category))
                 .collect();
             match judge::pick_transition(status, &opts) {
-                Some(i) => jira::apply_transition(cfg, key, &trs[i].id).is_ok(),
-                None => jira::transition_issue(cfg, key, status).is_ok(),
+                Some(i) => {
+                    let _ = jira::apply_transition(cfg, key, &trs[i].id);
+                }
+                None => {
+                    let _ = jira::transition_issue(cfg, key, status);
+                }
             }
         }
-        _ => jira::transition_issue(cfg, key, status).is_ok(),
-    };
-    let label = match status {
-        "doing" => "In progress",
-        "done" => "Done",
-        "verified" => "Verified",
-        _ => "To do",
-    };
-    let note = if applied {
-        format!("EvorIDE: “{title}” moved to {label}.")
-    } else {
-        format!("EvorIDE: “{title}” is now {label} (status couldn't be transitioned automatically).")
-    };
-    let _ = jira::add_comment(cfg, key, &note);
+        _ => {
+            let _ = jira::transition_issue(cfg, key, status);
+        }
+    }
 }
 
 #[tauri::command]
@@ -753,8 +746,8 @@ fn ingest_agent_tasks(store: State<Store>, project: String, agent_id: String) ->
         if let Some(t) = store.get_task(id) {
             if t.source == "jira" {
                 if let (Some(key), Some(cfg)) = (t.external_id.clone(), secrets::load_jira()) {
-                    let (st, title) = (t.status.clone(), t.title.clone());
-                    std::thread::spawn(move || jira_push_status(&cfg, &key, &st, &title));
+                    let st = t.status.clone();
+                    std::thread::spawn(move || jira_push_status(&cfg, &key, &st));
                 }
             }
         }
@@ -1383,6 +1376,11 @@ fn set_daily_summary(settings: State<SettingsStore>, enabled: bool) -> Settings 
     settings.set_daily_summary(enabled)
 }
 
+#[tauri::command]
+fn set_auto_continue_rate_limit(settings: State<SettingsStore>, enabled: bool) -> Settings {
+    settings.set_auto_continue_rate_limit(enabled)
+}
+
 // --- skills ---
 
 /// Bundled skills with their current enabled state, for Settings → Skills.
@@ -1718,6 +1716,7 @@ pub fn run() {
             open_window,
             get_settings,
             set_daily_summary,
+            set_auto_continue_rate_limit,
             list_skills,
             set_skill_enabled,
             remove_skill,

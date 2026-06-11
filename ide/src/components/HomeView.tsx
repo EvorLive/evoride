@@ -230,6 +230,23 @@ export default function HomeView({
   // "See all" dialog — full list + import-to-today.
   const [jiraAllOpen, setJiraAllOpen] = useState(false);
 
+  // ⟳ Jira: pull issues → tasks (statuses/descriptions upsert) and reload the
+  // inbox + board. Falls back to Settings → Jira when it isn't connected yet.
+  const [jiraBusy, setJiraBusy] = useState(false);
+  const refreshJira = async () => {
+    if (jiraBusy) return;
+    setJiraBusy(true);
+    try {
+      await api.jiraSync();
+      loadJira();
+      onTasksRefresh?.();
+    } catch {
+      onOpenJira?.();
+    } finally {
+      setJiraBusy(false);
+    }
+  };
+
   return (
     <div className="home">
       <div className="home-inner">
@@ -342,8 +359,13 @@ export default function HomeView({
           <div className="home-h2-row">
             <h2 className="home-h2">Tasks</h2>
             {onOpenJira && (
-              <button className="btn-ghost home-jira" onClick={onOpenJira} title="Connect Jira (Settings)">
-                ⟳ Jira
+              <button
+                className="btn-ghost home-jira"
+                onClick={() => void refreshJira()}
+                disabled={jiraBusy}
+                title="Refresh Jira tasks"
+              >
+                {jiraBusy ? "⟳ Syncing…" : "⟳ Jira"}
               </button>
             )}
           </div>
