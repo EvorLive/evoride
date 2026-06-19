@@ -16,7 +16,7 @@
 
 /* Light palette values, shared by explicit light and system-light. */
 :root[data-theme="light"] {
-  --bg: #f6f7f9;
+  --bg: #ffffff;
   --surface: #ffffff;
   --surface-2: #eceef2;
   --border: #d9dde4;
@@ -31,7 +31,7 @@
 }
 @media (prefers-color-scheme: light) {
   :root[data-theme="system"] {
-    --bg: #f6f7f9;
+    --bg: #ffffff;
     --surface: #ffffff;
     --surface-2: #eceef2;
     --border: #d9dde4;

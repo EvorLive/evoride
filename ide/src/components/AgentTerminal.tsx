@@ -18,8 +18,10 @@ function b64ToBytes(b64: string): Uint8Array {
 }
 
 const DARK_THEME = {
-  // Slightly translucent so the terminal reads as its own surface over the panel.
-  background: "rgba(8, 10, 15, 0.55)",
+  // Opaque and matched to the dark pane (--bg) so the terminal is seamless and
+  // text keeps full contrast — a translucent bg composites into a washed-out
+  // grey when the pane underneath is the other mode.
+  background: "#090b11",
   foreground: "#e6e8ee",
   cursor: "#38bdf8",
   cursorAccent: "#0b0d12",
@@ -45,27 +47,27 @@ const DARK_THEME = {
 // Light theme so the terminal matches the IDE when it's in light mode — ANSI
 // colors darkened to read on a white background.
 const LIGHT_THEME = {
-  background: "rgba(255, 255, 255, 0.6)",
-  foreground: "#1e2530",
-  cursor: "#0284c7",
+  background: "#ffffff",
+  foreground: "#10151c",
+  cursor: "#0270b0",
   cursorAccent: "#ffffff",
-  selectionBackground: "#cfe3f5",
-  black: "#2b2f36",
-  red: "#d6336c",
-  green: "#2f9e44",
-  yellow: "#a06a00",
-  blue: "#1c7ed6",
-  magenta: "#9c36b5",
-  cyan: "#0c8599",
-  white: "#495057",
-  brightBlack: "#868e96",
-  brightRed: "#e8590c",
-  brightGreen: "#2b8a3e",
-  brightYellow: "#856100",
-  brightBlue: "#1971c2",
-  brightMagenta: "#862e9c",
-  brightCyan: "#0b7285",
-  brightWhite: "#212529",
+  selectionBackground: "#bcdcf6",
+  black: "#1b1f26",
+  red: "#c01540",
+  green: "#1f7a30",
+  yellow: "#825400",
+  blue: "#1361bf",
+  magenta: "#882596",
+  cyan: "#0a6e80",
+  white: "#3c434d",
+  brightBlack: "#5e6672",
+  brightRed: "#cf3a08",
+  brightGreen: "#1f7a32",
+  brightYellow: "#6c4a00",
+  brightBlue: "#1357a8",
+  brightMagenta: "#76238a",
+  brightCyan: "#0a6173",
+  brightWhite: "#10151c",
 };
 
 const themeFor = (mode: "light" | "dark") => (mode === "light" ? LIGHT_THEME : DARK_THEME);
@@ -132,8 +134,6 @@ export default function AgentTerminal({
   onIssueRef.current = onIssue;
   const onInputRef = useRef(onInput);
   onInputRef.current = onInput;
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
 
   // Right-click context menu (viewport coords + whether there's a selection).
   const [menu, setMenu] = useState<{ x: number; y: number; hasSel: boolean } | null>(null);
@@ -178,22 +178,20 @@ export default function AgentTerminal({
     };
   }, [menu]);
 
-  // Recolor the live terminal when the IDE switches light/dark (no recreate).
-  useEffect(() => {
-    if (termRef.current) termRef.current.options.theme = themeFor(mode);
-  }, [mode]);
-
   useEffect(() => {
     if (!hostRef.current) return;
     const host = hostRef.current;
 
     const term = new Terminal({
       cursorBlink: true,
-      allowTransparency: true, // so the slightly translucent bg reads over the panel
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: 12.5,
       lineHeight: 1.15,
-      theme: themeFor(modeRef.current),
+      // Force readable contrast: xterm dynamically lifts any low-contrast text
+      // (dim/faint output, agent palette) to meet this ratio against the bg —
+      // fixes washed-out greys, especially on the white light theme.
+      minimumContrastRatio: 4.5,
+      theme: themeFor(mode),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -308,8 +306,11 @@ export default function AgentTerminal({
       termRef.current = null;
       fitRef.current = null;
     };
+    // Rebuild on `mode` change too: xterm's runtime theme update doesn't reliably
+    // repaint the existing buffer in this webview, so we recreate with the correct
+    // theme at construction (scrollback is restored from the backend above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, mode]);
 
   // When this tile becomes active (shown), it finally has width — refit so the
   // pty matches the real column count.
@@ -332,9 +333,8 @@ export default function AgentTerminal({
     return () => cancelAnimationFrame(raf);
   }, [active, id]);
 
-  // Host stays transparent over the pane (var(--bg)); the terminal's slightly
-  // translucent background composites over it — a subtle distinction, no
-  // mismatched third color in the padding/fit gap.
+  // Host stays transparent over the pane (var(--bg)); the terminal paints its own
+  // opaque background matched to the pane, so the padding/fit gap blends in.
   return (
     <>
       <div ref={hostRef} className="term-host" />
