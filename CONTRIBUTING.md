@@ -1,4 +1,4 @@
-# Contributing to EvorIDE
+# Contributing to Evor
 
 Thanks for being here 🙌 — this project exists to be built *with* people. It's early and
 moves fast, so contributions of every size are welcome: bug reports, docs, a new agent
@@ -15,7 +15,7 @@ integration, or picking up a roadmap item.
 
 | Path | What |
 |---|---|
-| `ide/` | EvorIDE desktop app — `src/` (React/TS), `src-tauri/src/` (Rust backend) |
+| `ide/` | Evor desktop app — `src/` (React/TS), `src-tauri/src/` (Rust backend) |
 | `tui/` | eterm smart terminal (Rust, ratatui) |
 | `server/` | WebSocket relay (Rust, Axum) |
 | `web/` | Web dashboard (Next.js) |

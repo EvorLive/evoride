@@ -57,6 +57,23 @@ struct WaitingEvent {
     question: String,
 }
 
+/// Payload for the `agent-rate-limited` event — the agent hit a usage/session
+/// limit and is blocked until it resets. The frontend schedules an auto-continue
+/// at the reset time when the "Auto-continue after rate limit" setting is on.
+#[derive(Clone, Serialize)]
+struct RateLimitEvent {
+    id: String,
+    limited: bool,
+    /// The message Claude printed (empty when clearing).
+    message: String,
+    /// Wall-clock reset time, e.g. "2:20am" (empty if not parsed).
+    reset_clock: String,
+    /// IANA zone the clock is in, e.g. "Europe/Berlin" (empty → local).
+    reset_tz: String,
+    /// Exact reset time as unix seconds when Claude printed `|<ts>` (else null).
+    reset_epoch: Option<u64>,
+}
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -146,6 +163,7 @@ impl SessionManager {
             let mut waiting = false;
             let mut options: Vec<String> = Vec::new();
             let mut question = String::new();
+            let mut rate_limited = false;
             // Prompt detection is the per-chunk hot path; during a burst of output
             // (a build, a log dump) re-running it on every 8KB chunk throttles the
             // reader and makes the terminal feel laggy. Rate-limit it — a prompt
@@ -185,6 +203,27 @@ impl SessionManager {
                                     },
                                 );
                             }
+                            // Usage/session-limit detection: emit on transition so
+                            // the frontend can schedule an auto-continue at reset.
+                            let rl = eterm_core::detect_rate_limit(tail.text());
+                            let now_limited = rl.is_some();
+                            if now_limited != rate_limited {
+                                rate_limited = now_limited;
+                                let (message, reset_clock, reset_tz, reset_epoch) = rl
+                                    .map(|r| (r.message, r.reset_clock, r.reset_tz, r.reset_epoch))
+                                    .unwrap_or_default();
+                                let _ = ev_app.emit(
+                                    "agent-rate-limited",
+                                    RateLimitEvent {
+                                        id: ev_id.clone(),
+                                        limited: now_limited,
+                                        message,
+                                        reset_clock,
+                                        reset_tz,
+                                        reset_epoch,
+                                    },
+                                );
+                            }
                         }
                         {
                             let mut s = sb.lock().unwrap();
@@ -215,6 +254,19 @@ impl SessionManager {
                     question: String::new(),
                 },
             );
+            if rate_limited {
+                let _ = ev_app.emit(
+                    "agent-rate-limited",
+                    RateLimitEvent {
+                        id: ev_id.clone(),
+                        limited: false,
+                        message: String::new(),
+                        reset_clock: String::new(),
+                        reset_tz: String::new(),
+                        reset_epoch: None,
+                    },
+                );
+            }
             let _ = ev_app.emit(
                 "pty-exit",
                 ExitEvent {
@@ -270,6 +322,12 @@ impl SessionManager {
             let _ = s.child.kill();
         }
         Ok(())
+    }
+
+    /// OS pid of a session's child process (the pty's shell/agent), if live.
+    /// Used to walk the process tree and detect what's running under a terminal.
+    pub fn child_pid(&self, id: &str) -> Option<u32> {
+        self.sessions.lock().unwrap().get(id).and_then(|s| s.child.process_id())
     }
 
     /// Snapshot of a session's scrollback for restoring a discarded tile.

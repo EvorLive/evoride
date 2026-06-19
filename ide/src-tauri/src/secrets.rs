@@ -45,6 +45,11 @@ impl JiraConfig {
 struct Secrets {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     jira: Option<JiraConfig>,
+    /// Per-device bearer token for the hosted Evor dashboard (evor.dev) remote
+    /// control. Minted in the dashboard, pasted into Settings → Remote. Lives
+    /// here (0600) so it's never returned to the webview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evor_token: Option<String>,
 }
 
 fn secrets_path() -> Option<PathBuf> {
@@ -106,5 +111,22 @@ pub fn load_jira() -> Option<JiraConfig> {
 pub fn save_jira(cfg: Option<JiraConfig>) -> Result<(), String> {
     let mut s = read();
     s.jira = cfg.filter(|c| c.is_usable());
+    write(&s)
+}
+
+/// The stored Evor device token, if any (non-empty).
+pub fn load_evor_token() -> Option<String> {
+    read().evor_token.filter(|t| !t.trim().is_empty())
+}
+
+/// Whether a device token is stored — the only thing the UI may learn about it.
+pub fn has_evor_token() -> bool {
+    load_evor_token().is_some()
+}
+
+/// Persist (or clear, with `None`) the Evor device token.
+pub fn save_evor_token(token: Option<String>) -> Result<(), String> {
+    let mut s = read();
+    s.evor_token = token.filter(|t| !t.trim().is_empty());
     write(&s)
 }

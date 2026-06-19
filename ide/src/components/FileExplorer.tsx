@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { createFile, readDir, type FileEntry } from "../lib/tauri";
+import { createFile, onFsChanged, readDir, type FileEntry } from "../lib/tauri";
 
 // A lazily-expanding directory node (VS Code-style explorer).
 function TreeNode({
@@ -7,11 +7,15 @@ function TreeNode({
   depth,
   onOpen,
   activePath,
+  version,
 }: {
   entry: FileEntry;
   depth: number;
   onOpen: (e: FileEntry, opts?: { preview?: boolean }) => void;
   activePath: string | null;
+  // Bumped on every external fs change; open dirs re-read their children when
+  // it changes so the tree stays in sync without a manual reload.
+  version: number;
 }) {
   const [open, setOpen] = useState(false);
   const [children, setChildren] = useState<FileEntry[] | null>(null);
@@ -23,6 +27,15 @@ function TreeNode({
       readDir(entry.path).then(setChildren).catch(() => setChildren([]));
     }
   };
+
+  // Re-read this directory's children when the tree changes on disk, but only
+  // while it's expanded — collapsed nodes re-read lazily on next expand.
+  useEffect(() => {
+    if (open && entry.is_dir) {
+      readDir(entry.path).then(setChildren).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
 
   // VSCode behavior: single-click a file opens it as a temporary "preview" tab;
   // double-click opens it permanently. Directories just expand/collapse.
@@ -64,6 +77,7 @@ function TreeNode({
             depth={depth + 1}
             onOpen={onOpen}
             activePath={activePath}
+            version={version}
           />
         ))}
     </>
@@ -84,10 +98,33 @@ export default function FileExplorer({
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Incremented whenever the project's files change on disk; drives the
+  // re-read of any expanded directory node (see TreeNode).
+  const [version, setVersion] = useState(0);
 
   const refresh = () => readDir(root).then(setTree).catch(() => setTree([]));
   useEffect(() => {
     refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root]);
+
+  // Auto-refresh on external filesystem changes (an agent or external tool
+  // creating/renaming/deleting files) — no manual reload needed.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    onFsChanged((changed) => {
+      if (changed !== root) return;
+      refresh();
+      setVersion((v) => v + 1);
+    }).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
 
@@ -140,6 +177,7 @@ export default function FileExplorer({
             depth={0}
             onOpen={onOpenFile}
             activePath={activePath}
+            version={version}
           />
         ))}
       </div>

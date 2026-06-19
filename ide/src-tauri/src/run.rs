@@ -21,6 +21,14 @@ pub struct Service {
     /// Optional regex matching a "ready" line in the service's output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready_when: Option<String>,
+    /// Optional "stop" command run when the project is PAUSED (e.g.
+    /// `docker compose down`). Read from config when present; otherwise derived
+    /// for compose-/tilt-style `up` commands so pausing actually tears the stack
+    /// down (not just detaching the terminal). Like `command`, it is only ever
+    /// auto-run when `command_is_trusted` accepts it — the trust gate is enforced
+    /// at the `run_command_once` boundary, never here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub down: Option<String>,
     /// Whether this service's `command` is safe to spawn automatically. Computed
     /// (never read from the config file) — true only when the program is a known
     /// dev-tool launched by bare name. The UI auto-runs trusted services and asks
@@ -46,12 +54,12 @@ const TRUSTED_PROGRAMS: &[&str] = &[
     "nodemon", "tsx", "ts-node", "cargo", "go", "air", "python", "python3", "pip", "pip3",
     "uvicorn", "gunicorn", "flask", "django-admin", "poetry", "uv", "pdm", "hatch", "rye", "ruby",
     "bundle", "rake", "rails", "puma", "rackup", "php", "composer", "artisan", "dotnet", "mvn",
-    "gradle", "make", "just", "task", "docker", "docker-compose", "podman", "flutter", "dart",
-    "elixir", "mix", "iex",
+    "gradle", "make", "just", "task", "docker", "docker-compose", "podman", "podman-compose",
+    "tilt", "flutter", "dart", "elixir", "mix", "iex",
 ];
 
 /// True when `command`'s program token is a bare, allow-listed dev tool.
-fn command_is_trusted(command: &str) -> bool {
+pub fn command_is_trusted(command: &str) -> bool {
     let prog = command.split_whitespace().next().unwrap_or("");
     !prog.is_empty()
         && !prog.contains('/')
@@ -59,11 +67,35 @@ fn command_is_trusted(command: &str) -> bool {
         && TRUSTED_PROGRAMS.contains(&prog)
 }
 
-/// Stamp each service's `trusted` flag from its command. Applied at the boundary
+/// Derive a "stop" command for a long-running `up`-style command, so PAUSING a
+/// project actually tears the stack down instead of just detaching the terminal.
+/// Only compose-/tilt-style tools have a meaningful down; a plain dev server
+/// (`npm run dev`) is stopped by killing its process, so this returns `None`.
+fn derive_down(command: &str) -> Option<String> {
+    let lower = command.trim().to_lowercase();
+    for (up, down) in [
+        ("docker compose up", "docker compose down"),
+        ("docker-compose up", "docker-compose down"),
+        ("podman compose up", "podman compose down"),
+        ("podman-compose up", "podman-compose down"),
+        ("tilt up", "tilt down"),
+    ] {
+        if lower == up || lower.starts_with(&format!("{up} ")) {
+            return Some(down.to_string());
+        }
+    }
+    None
+}
+
+/// Stamp each service's `trusted` flag from its command, and fill in a derived
+/// `down` command when the config didn't supply one. Applied at the boundary
 /// where services are returned to the UI/spawn layer.
 fn mark_trust(mut services: Vec<Service>) -> Vec<Service> {
     for s in &mut services {
         s.trusted = command_is_trusted(&s.command);
+        if s.down.is_none() {
+            s.down = derive_down(&s.command);
+        }
     }
     services
 }
@@ -333,6 +365,57 @@ mod tests {
     }
 
     #[test]
+    fn trust_gate_allows_dev_tools_and_blocks_paths_and_shells() {
+        // Allow-listed dev tools by bare name are trusted (these become the
+        // teardown commands run_command_once will run on pause).
+        assert!(command_is_trusted("docker compose down"));
+        assert!(command_is_trusted("docker-compose down"));
+        assert!(command_is_trusted("tilt down"));
+        assert!(command_is_trusted("npm run dev"));
+        // A shell is NEVER trusted — that's the code-execution smuggling vector.
+        assert!(!command_is_trusted("sh -c 'rm -rf ~'"));
+        assert!(!command_is_trusted("bash -lc whatever"));
+        // An absolute or relative path is not a bare allow-listed name.
+        assert!(!command_is_trusted("/tmp/evil"));
+        assert!(!command_is_trusted("./payload up"));
+        assert!(!command_is_trusted("../bin/docker compose down"));
+        // Unknown program, empty.
+        assert!(!command_is_trusted("kubectl delete ns"));
+        assert!(!command_is_trusted(""));
+    }
+
+    #[test]
+    fn derives_down_for_compose_and_tilt() {
+        assert_eq!(
+            derive_down("docker compose up"),
+            Some("docker compose down".into())
+        );
+        assert_eq!(
+            derive_down("docker compose up -d --build"),
+            Some("docker compose down".into())
+        );
+        assert_eq!(derive_down("tilt up"), Some("tilt down".into()));
+        assert_eq!(
+            derive_down("docker-compose up"),
+            Some("docker-compose down".into())
+        );
+        // A plain dev server is stopped by killing it — no down command.
+        assert_eq!(derive_down("npm run dev"), None);
+        assert_eq!(derive_down("cargo run"), None);
+    }
+
+    #[test]
+    fn mark_trust_fills_derived_down() {
+        let svcs = mark_trust(vec![Service {
+            name: "stack".into(),
+            command: "docker compose up".into(),
+            ..Default::default()
+        }]);
+        assert!(svcs[0].trusted);
+        assert_eq!(svcs[0].down.as_deref(), Some("docker compose down"));
+    }
+
+    #[test]
     fn detects_cargo() {
         let d = tmpdir("cargo");
         std::fs::write(d.join("Cargo.toml"), "[package]").unwrap();
@@ -378,8 +461,9 @@ mod tests {
 
     #[test]
     fn ai_runinfo_takes_precedence_over_detect() {
+        let _env = crate::env_lock();
         let home = tmpdir("home");
-        // SAFETY: test-only; no other run test depends on HOME.
+        // SAFETY: test-only; serialized via env_lock so HOME isn't clobbered.
         unsafe { std::env::set_var("HOME", &home) };
         let pid = "proj-abc-123";
         let dir = home.join(".evoride").join(pid);

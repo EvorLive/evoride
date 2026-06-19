@@ -9,7 +9,8 @@ export interface Command {
 
 // A simple subsequence fuzzy scorer: every query char must appear in order.
 // Higher score = more contiguous + earlier match. Returns null on no match.
-function fuzzyScore(query: string, target: string): number | null {
+// Shared with AgentSwitcher so both overlays rank matches identically.
+export function fuzzyScore(query: string, target: string): number | null {
   if (!query) return 0;
   const q = query.toLowerCase();
   const t = target.toLowerCase();

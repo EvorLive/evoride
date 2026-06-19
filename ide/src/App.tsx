@@ -4,6 +4,7 @@ import AgentsColumn from "./components/AgentsColumn";
 import ProjectHome from "./components/ProjectHome";
 import JiraProjectPicker from "./components/JiraProjectPicker";
 import RunControl from "./components/RunControl";
+import PauseControl from "./components/PauseControl";
 import NewAgentMenu from "./components/NewAgentMenu";
 import StatusBar from "./components/StatusBar";
 import HomeView from "./components/HomeView";
@@ -11,6 +12,9 @@ import HomeBar from "./components/HomeBar";
 import SettingsDialog from "./components/SettingsDialog";
 import RunSetupDialog from "./components/RunSetupDialog";
 import CommandPalette, { type Command } from "./components/CommandPalette";
+import AgentSwitcher, { type SwitcherItem } from "./components/AgentSwitcher";
+import SuperProjectBar from "./components/SuperProjectBar";
+import NotificationCenter from "./components/NotificationCenter";
 import { loadAgents, saveAgents, enabledClis, type AgentConfig } from "./lib/agents";
 import { autopilotCommand } from "./lib/clis";
 import * as demo from "./lib/demo";
@@ -32,8 +36,10 @@ import type {
   AgentRecord,
   ClaudeSession,
   ClaudeUsage,
+  DetectedStack,
   FileEntry,
   GitStatus,
+  PausedItem,
   Project,
   Service,
   Task,
@@ -70,6 +76,18 @@ export default function App() {
   // Agent ids whose terminal is currently popped out into its own window.
   const [poppedOut, setPoppedOut] = useState<Set<string>>(new Set());
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
+  // A second pane shown beside/below the active agent terminal (VS Code-style
+  // split). `kind` "shell" = a throwaway terminal to run commands; "editor" =
+  // the open files, so you can read a file next to the agent. `dir` picks side
+  // by side (row) vs stacked (column). null = no split.
+  const [split, setSplit] = useState<{
+    dir: "row" | "column";
+    kind: "shell" | "editor";
+  } | null>(null);
+  // The split shell's pty id (reused across shell/editor toggles), if spawned.
+  const [splitAgentId, setSplitAgentId] = useState<string | null>(null);
+  // Which pane is focused — drives the highlight and where new files land.
+  const [activePane, setActivePane] = useState<"main" | "split">("main");
   // One right-side panel at a time (git/plan/files/edits), or none.
   type RightPanel = "git" | "plan" | "files" | "edits";
   const [rightPanel, setRightPanel] = useState<RightPanel | null>("git");
@@ -78,12 +96,19 @@ export default function App() {
   const [services, setServices] = useState<Service[]>([]);
   // service name → live agent id while that service is running.
   const [runningServices, setRunningServices] = useState<Record<string, string>>({});
+  // Project ids that are currently PAUSED (everything suspended + retained).
+  const [pausedProjects, setPausedProjects] = useState<Set<string>>(new Set());
+  // While a pause is counting down: which project + seconds left (null = idle).
+  const [pausing, setPausing] = useState<{ projectId: string; secondsLeft: number } | null>(null);
   const [home, setHome] = useState<string | null>(null);
   // Diff shown in the center (replacing the terminal); null = show terminal.
   const [diffView, setDiffView] = useState<{ file: string | null } | null>(null);
   const [usage, setUsage] = useState<ClaudeUsage | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [knownProjects, setKnownProjects] = useState<Project[]>([]);
+  // Super-projects (named groups of repos) + which one scopes the Home overview.
+  const [superProjects, setSuperProjects] = useState<api.SuperProject[]>([]);
+  const [activeSuperId, setActiveSuperId] = useState<string | null>(null);
   // Latest URL detected in each agent's output (for the "Open URL" button).
   const [urlByAgent, setUrlByAgent] = useState<Record<string, string>>({});
   // Agents that exited with a detected issue → fix context.
@@ -104,6 +129,8 @@ export default function App() {
   // Hidden helper-judge: per-agent classified state + plumbing to run it on idle.
   const [agentState, setAgentState] = useState<Record<string, "working" | "passive" | "active">>({});
   const [hasJudge, setHasJudge] = useState(false);
+  // Remote control (evor.dev): true once Settings → Remote is fully configured.
+  const [remoteOn, setRemoteOn] = useState(false);
   // Real app version (from the release tag → tauri.conf.json), shown in the bars.
   const [appVer, setAppVer] = useState("");
   useEffect(() => {
@@ -111,6 +138,9 @@ export default function App() {
   }, []);
   const lastOutputRef = useRef<Record<string, number>>({});
   const judgedRef = useRef<Record<string, number>>({});
+  // Signature of what we last published per waiting agent, so we only re-POST
+  // to the dashboard when the question/options actually change.
+  const pubSigRef = useRef<Record<string, string>>({});
   // Multi-terminal "Workspace" grid. Several named workspaces, each holding up
   // to MAX_TILES pinned agent tiles, persisted and reconciled on load.
   const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
@@ -184,6 +214,20 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("evoride-judge", judgeEnabled ? "1" : "0");
   }, [judgeEnabled]);
+  // Auto-continue agents after a usage/session limit resets. Mirrored into a ref
+  // so the (register-once) listener reads the latest value without re-binding.
+  const [autoContinueRL, setAutoContinueRL] = useState(true);
+  const autoContinueRLRef = useRef(true);
+  useEffect(() => {
+    autoContinueRLRef.current = autoContinueRL;
+  }, [autoContinueRL]);
+  useEffect(() => {
+    api.getSettings().then((s) => setAutoContinueRL(s.auto_continue_rate_limit)).catch(() => {});
+  }, []);
+  // Agents currently blocked on a limit: id → { message, resetAt(ms|null) } for
+  // the tile badge. Pending auto-continue timers live in a ref (no re-render).
+  const [rateLimited, setRateLimited] = useState<Record<string, { message: string; resetAt: number | null }>>({});
+  const rlTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"general" | "agents" | "jira">("general");
   // AI dedupe gate: when creating a task that looks like a duplicate, hold the
@@ -207,6 +251,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteMode, setPaletteMode] = useState<"files" | "commands">("files");
   const [paletteFiles, setPaletteFiles] = useState<string[]>([]);
+  // Quick agent / window switcher (⌘E) — jump to any running agent.
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   // Which overlay the Workspace grid shows ("pull" / "new"), controlled here so
   // the command palette can open them too.
   const [gridMenu, setGridMenu] = useState<"pull" | "new" | null>(null);
@@ -255,7 +301,11 @@ export default function App() {
       setActiveFile((cur) =>
         cur === path ? (next[next.length - 1]?.path ?? null) : cur,
       );
-      if (next.length === 0) setCenterMode("terminal");
+      if (next.length === 0) {
+        setCenterMode("terminal");
+        // No files left → an editor split has nothing to show; collapse it.
+        setSplit((s) => (s?.kind === "editor" ? null : s));
+      }
       return next;
     });
   };
@@ -290,6 +340,50 @@ export default function App() {
     api.listAgents(pid).then(setAgents).catch(() => {});
   }, []);
 
+  const refreshSuperProjects = useCallback(() => {
+    api.listSuperProjects().then(setSuperProjects).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!demoOn) refreshSuperProjects();
+  }, [demoOn, refreshSuperProjects]);
+
+  // Drop the group filter if its group disappears (e.g. deleted elsewhere).
+  useEffect(() => {
+    if (activeSuperId && !superProjects.some((s) => s.id === activeSuperId)) {
+      setActiveSuperId(null);
+    }
+  }, [superProjects, activeSuperId]);
+
+  // Create a group from the rail, seeded with the current project so it appears
+  // under ACTIVE immediately. Optimistic insert avoids the stale-filter guard.
+  const createGroupSeeded = useCallback((name: string) => {
+    if (!name || !name.trim()) return;
+    const seed = project?.id;
+    api
+      .createSuperProject(name.trim())
+      .then(async (sp) => {
+        if (seed) {
+          await api.setSuperProjectMembers(sp.id, [seed]).catch(() => {});
+          sp = { ...sp, project_ids: [seed] };
+        }
+        setSuperProjects((prev) => [...prev, sp]);
+        setActiveSuperId(sp.id);
+        refreshSuperProjects();
+      })
+      .catch(() => {});
+  }, [project, refreshSuperProjects]);
+
+  const setGroupMembers = useCallback(
+    (id: string, ids: string[]) => {
+      // Optimistic so the rail updates instantly, then reconcile.
+      setSuperProjects((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, project_ids: ids } : s)),
+      );
+      api.setSuperProjectMembers(id, ids).then(refreshSuperProjects).catch(() => {});
+    },
+    [refreshSuperProjects],
+  );
+
   const refreshGitStatus = useCallback(() => {
     if (project) api.gitStatus(project.path).then(setGit).catch(() => {});
   }, [project]);
@@ -308,6 +402,9 @@ export default function App() {
     api.runConfig(project.id, project.path).then(setServices).catch(() => setServices([]));
     setOpenFiles([]);
     setActiveFile(null);
+    setSplit(null); // the split is project-scoped; drop it on switch
+    setSplitAgentId(null);
+    setActivePane("main");
   }, [project, refreshAgents]);
 
   // Resolve the home dir once for tilde-ified window titles.
@@ -328,11 +425,19 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod || e.key.toLowerCase() !== "p") return;
-      e.preventDefault();
-      const fileable = view === "workspace" && !!project;
-      setPaletteMode(e.shiftKey || !fileable ? "commands" : "files");
-      setPaletteOpen(true);
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "p") {
+        e.preventDefault();
+        const fileable = view === "workspace" && !!project;
+        setPaletteMode(e.shiftKey || !fileable ? "commands" : "files");
+        setPaletteOpen(true);
+      } else if (key === "e" && e.shiftKey) {
+        // ⌘⇧E / Ctrl⇧E: quick switcher over every running agent (toggle).
+        // Shift avoids the bare Ctrl+E readline binding (end-of-line) on Linux.
+        e.preventDefault();
+        setSwitcherOpen((o) => !o);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -411,6 +516,11 @@ export default function App() {
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Restore which projects are paused (so the header shows Resume after restart).
+  useEffect(() => {
+    api.pausedProjects().then((ids) => setPausedProjects(new Set(ids))).catch(() => {});
   }, []);
 
   // Persist workspaces + which one is active.
@@ -673,12 +783,12 @@ export default function App() {
     };
   }, [project, agents, live, activeAgentId]);
 
-  // OS window title like "EvorIDE - ~/sajilobima/".
+  // OS window title like "Evor - ~/sajilobima/".
   useEffect(() => {
     let loc = project?.path ?? "";
     if (home && loc.startsWith(home)) loc = `~${loc.slice(home.length)}`;
     if (loc && !loc.endsWith("/")) loc += "/";
-    const title = project ? `EvorIDE - ${loc}` : "EvorIDE";
+    const title = project ? `Evor - ${loc}` : "Evor";
     document.title = title;
     getCurrentWindow().setTitle(title).catch(() => {});
   }, [project, home]);
@@ -832,7 +942,7 @@ export default function App() {
     // show exactly what would run and require explicit confirmation first.
     if (!s.trusted) {
       const ok = await api.confirmRun(
-        `EvorIDE wants to run “${s.name}”:\n\n${s.command}\n\nin ${
+        `Evor wants to run “${s.name}”:\n\n${s.command}\n\nin ${
           s.cwd || "the project root"
         }\n\nThis isn't a recognized dev-tool command, so it could come from the repository or an AI-generated config. Run it?`,
       );
@@ -866,6 +976,170 @@ export default function App() {
     if (!project) return;
     const svcs = await api.createRunConfig(project.path).catch(() => null);
     if (svcs) setServices(svcs);
+  };
+
+  // --- pause / resume the whole project ---
+  // Graceful shutdown → startup for everything running in a project. Pause tells
+  // each live AI agent to save its progress, counts down 10s, then interrupts it
+  // (Ctrl+C) and suspends it; services are torn down (their `down` command, e.g.
+  // `docker compose down`) and stopped. A manifest records what was suspended so
+  // Resume restores it — agents continue in place (Claude `--continue`) with a
+  // "continue now" signal, and services re-run their `up` command.
+  const PAUSE_GRACE = 10;
+  const wait = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
+  // A live agent is a "service" iff its title matches a configured service name.
+  const serviceByTitle = useCallback(
+    (title: string) => services.find((s) => s.name === title),
+    [services],
+  );
+  const pauseProject = async () => {
+    if (!project || pausing) return;
+    const pid = project.id;
+    const liveAgents = agents.filter((a) => live.has(a.id));
+    if (liveAgents.length === 0) return;
+    const aiAgents = liveAgents.filter((a) => !serviceByTitle(a.title));
+
+    // 1. Ask the AI agents to wrap up safely (bracketed paste preserves newlines).
+    const graceMsg =
+      "⏸ Pausing this project in 10 seconds. Please wrap up safely now: stop any risky action, " +
+      "save your progress, and jot a quick note of where you are and what's left. I'll send you a " +
+      "signal to continue shortly — you'll be interrupted (Ctrl+C) in 10s, so don't start anything new.";
+    for (const a of aiAgents) {
+      api
+        .writeInput(a.id, `\x1b[200~${graceMsg}\x1b[201~`)
+        .then(() => api.writeInput(a.id, "\r"))
+        .catch(() => {});
+    }
+
+    // 2. Visible 10s countdown.
+    for (let s = PAUSE_GRACE; s > 0; s--) {
+      setPausing({ projectId: pid, secondsLeft: s });
+      await wait(1000);
+    }
+
+    // Map an agent's absolute cwd to a project-relative subdir (or undefined for
+    // the project root / anything outside it) for confined teardown commands.
+    const relCwd = (abs: string): string | undefined => {
+      if (!abs || abs === project.path) return undefined;
+      return abs.startsWith(`${project.path}/`) ? abs.slice(project.path.length + 1) : undefined;
+    };
+
+    // 3. Suspend everything, recording it in the manifest.
+    const items: PausedItem[] = [];
+    for (const a of liveAgents) {
+      const svc = serviceByTitle(a.title);
+      // Collect teardown commands: the configured service `down`, plus any stack
+      // actually running UNDER this terminal (compose/tilt a user or agent
+      // started by typing into the shell). Deduped by command.
+      const downs = new Map<string, string | undefined>(); // down command → subdir
+      if (svc?.down) downs.set(svc.down, svc.cwd || undefined);
+      const detected = await api.detectRunningStacks(a.id).catch(() => [] as DetectedStack[]);
+      for (const st of detected) if (!downs.has(st.down)) downs.set(st.down, relCwd(a.cwd));
+      for (const [cmd, sub] of downs) await api.runCommandOnce(pid, cmd, sub).catch(() => {});
+
+      const isService = !!svc;
+      if (!isService) {
+        // AI / shell: interrupt the current turn before suspending. The record
+        // is kept so Resume can `--continue`.
+        await api.writeInput(a.id, "\x03").catch(() => {});
+        await wait(300);
+      }
+      await api.pauseAgent(a.id).catch(() => {});
+      items.push({
+        id: a.id,
+        title: a.title,
+        command: a.command,
+        cwd: a.cwd,
+        kind: isService ? "service" : "ai",
+        down: downs.size ? [...downs.keys()].join(" && ") : undefined,
+      });
+      removeLive(a.id);
+    }
+
+    await api
+      .savePauseManifest(pid, { paused_at: Date.now(), items })
+      .catch(() => {});
+    setRunningServices({});
+    setPausedProjects((prev) => new Set(prev).add(pid));
+    setPausing(null);
+    setActiveAgentId(null);
+    refreshAgents(pid);
+  };
+  const resumeProject = async () => {
+    if (!project) return;
+    const pid = project.id;
+    const manifest = await api.readPauseManifest(pid).catch(() => null);
+    // Clear the paused state first so the button flips even if a restore step
+    // fails (the user can re-run individual agents/services from their rows).
+    setPausedProjects((prev) => {
+      const n = new Set(prev);
+      n.delete(pid);
+      return n;
+    });
+    await api.clearPauseManifest(pid).catch(() => {});
+    if (!manifest || !manifest.items.length) return;
+    for (const it of manifest.items) {
+      // Resume in place: Claude gets `--continue`, a service re-runs its command.
+      await api.resumeAgent(it.id).catch(() => {});
+      addLive(it.id);
+      setAgents((prev) => prev.map((a) => (a.id === it.id ? { ...a, status: "running" } : a)));
+      if (it.kind === "service") {
+        setRunningServices((p) => ({ ...p, [it.title]: it.id }));
+      } else {
+        // Give the resumed session a moment to come up, then tell it to continue.
+        window.setTimeout(() => {
+          api
+            .writeInput(it.id, "\x1b[200~Continue now — the project is resumed. Pick up exactly where you left off.\x1b[201~")
+            .then(() => api.writeInput(it.id, "\r"))
+            .catch(() => {});
+        }, 1800);
+      }
+    }
+    refreshAgents(pid);
+  };
+
+  // --- split pane ---
+  // Spawn (or reuse) the throwaway shell that backs a "shell" split.
+  const ensureSplitShell = async (): Promise<string | null> => {
+    if (splitAgentId && live.has(splitAgentId)) return splitAgentId;
+    if (!project) return null;
+    const primary = activeAgentId;
+    const rec = await api.spawnAgent({ projectId: project.id, title: "Terminal" });
+    addLive(rec.id);
+    setAgents((prev) => [rec, ...prev.filter((a) => a.id !== rec.id)]);
+    setSplitAgentId(rec.id);
+    // Keep the agent as the primary pane — the shell is the secondary one.
+    if (primary) setActiveAgentId(primary);
+    return rec.id;
+  };
+  // Open a plain shell beside the active agent (run commands while watching it).
+  const openSplitTerminal = async () => {
+    await ensureSplitShell();
+    setSplit((s) => ({ dir: s?.dir ?? "row", kind: "shell" }));
+    setActivePane("split");
+  };
+  // Show the open files in the split pane (a file next to the agent terminal).
+  const openSplitEditor = () => {
+    setSplit((s) => ({ dir: s?.dir ?? "row", kind: "editor" }));
+    setActivePane("split");
+  };
+  // Switch what the split pane shows without tearing it down.
+  const setSplitKind = async (kind: "shell" | "editor") => {
+    if (kind === "shell") await ensureSplitShell();
+    setSplit((s) => (s ? { ...s, kind } : { dir: "row", kind }));
+  };
+  // Flip side-by-side ⇄ stacked.
+  const toggleSplitDir = () =>
+    setSplit((s) => (s ? { ...s, dir: s.dir === "row" ? "column" : "row" } : s));
+  // Close the split and kill its throwaway shell (if one was spawned).
+  const closeSplit = () => {
+    const id = splitAgentId;
+    setSplit(null);
+    setActivePane("main");
+    if (id) {
+      setSplitAgentId(null);
+      void closeAgent(id);
+    }
   };
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   // "Set up / regenerate run with AI": spawn the CHOSEN agent, hand it the
@@ -954,6 +1228,13 @@ export default function App() {
     (id: string, info?: { hasError: boolean; context: string }) => {
       api.markAgentExited(id).catch(() => {});
       removeLive(id);
+      // A split shell that exits (e.g. the user typed `exit`) collapses a shell
+      // split; an editor split is unaffected (it has no pty).
+      setSplitAgentId((cur) => {
+        if (cur !== id) return cur;
+        setSplit((s) => (s?.kind === "shell" ? null : s));
+        return null;
+      });
       if (info?.hasError) {
         setAgentIssues((prev) => ({ ...prev, [id]: { context: info.context } }));
       }
@@ -1057,6 +1338,53 @@ export default function App() {
         un = u;
       });
     return () => un?.();
+  }, []);
+
+  // Global "agent hit a usage/session limit" listener. When the setting is on
+  // and we can pin down the reset moment, schedule a one-shot "continue" so the
+  // task resumes unattended the instant the limit lifts (+ a small buffer).
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    const clearTimer = (id: string) => {
+      const t = rlTimersRef.current[id];
+      if (t) {
+        clearTimeout(t);
+        delete rlTimersRef.current[id];
+      }
+    };
+    api
+      .onAgentRateLimited((rl) => {
+        if (!rl.limited) {
+          clearTimer(rl.id);
+          setRateLimited((p) => {
+            if (!(rl.id in p)) return p;
+            const { [rl.id]: _drop, ...rest } = p;
+            return rest;
+          });
+          return;
+        }
+        const resetAt = api.resetAtMs(rl);
+        setRateLimited((p) => ({ ...p, [rl.id]: { message: rl.message, resetAt } }));
+        clearTimer(rl.id); // re-arm fresh on any new detail
+        // Only auto-continue when enabled AND we resolved a concrete reset time —
+        // never type into an agent on a guess.
+        if (!autoContinueRLRef.current || resetAt === null) return;
+        const delay = Math.max(0, resetAt - Date.now()) + 20_000; // 20s buffer past reset
+        rlTimersRef.current[rl.id] = setTimeout(() => {
+          delete rlTimersRef.current[rl.id];
+          void api.writeInput(rl.id, "continue\r").catch(() => {});
+        }, delay);
+      })
+      .then((u) => {
+        un = u;
+      });
+    return () => {
+      un?.();
+      for (const id of Object.keys(rlTimersRef.current)) {
+        clearTimeout(rlTimersRef.current[id]);
+        delete rlTimersRef.current[id];
+      }
+    };
   }, []);
 
   // --- Hidden helper-judge: classify idle agents as working / passively-idle /
@@ -1279,6 +1607,15 @@ export default function App() {
   );
   const activeRec = agents.find((a) => a.id === activeAgentId) ?? null;
   const activeIsLive = activeAgentId ? live.has(activeAgentId) : false;
+  // The split pane only renders alongside a live agent terminal in the main pane,
+  // and only when it has something to show (a live shell, or open files).
+  const splitHasContent =
+    split?.kind === "editor"
+      ? openFiles.length > 0
+      : !!splitAgentId && splitAgentId !== activeAgentId && live.has(splitAgentId);
+  const showSplit = !!split && activeIsLive && !!activeAgentId && splitHasContent;
+  // When the editor lives in the split, the main pane keeps the agent terminal.
+  const editorInSplit = showSplit && split?.kind === "editor";
 
   // Agents currently live in THIS project — surfaced on the landing page so you
   // can see/jump to what's working without opening the rail.
@@ -1356,6 +1693,22 @@ export default function App() {
     return s;
   }, [waitingAgents, agentProject]);
 
+  // Last time each project was worked on (unix seconds) — a running agent counts
+  // as "now", otherwise the newest agent's start time. Drives the rail age badge
+  // and its newest-first ordering.
+  const lastActivityByProject = useMemo(() => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const m: Record<string, number> = {};
+    const bump = (pid: string, t: number) => {
+      if (t > (m[pid] ?? 0)) m[pid] = t;
+    };
+    for (const a of allAgentList) {
+      bump(a.project_id, a.status === "running" ? nowSec : a.created_at);
+    }
+    for (const a of runningList) bump(a.project_id, nowSec);
+    return m;
+  }, [allAgentList, runningList]);
+
   // id → record / id → project maps for resolving grid tile headers.
   const agentsById = useMemo(() => {
     const m: Record<string, AgentRecord> = {};
@@ -1368,6 +1721,76 @@ export default function App() {
     for (const p of knownProjects) m[p.id] = p;
     return m;
   }, [knownProjects]);
+
+  // Flat list of running agents across every project, for the ⌘E quick switcher.
+  // Union the backend poll (all projects, ~3s lag) with this window's live set so
+  // a just-started agent shows up immediately. needs-you first, then live, then
+  // most-recently-started.
+  const switchableAgents = useMemo<SwitcherItem[]>(() => {
+    const byId = new Map<string, AgentRecord>();
+    for (const a of runningList) byId.set(a.id, a);
+    for (const a of agents) if (live.has(a.id)) byId.set(a.id, a);
+    const items: SwitcherItem[] = [];
+    for (const a of byId.values()) {
+      items.push({
+        agent: a,
+        projectName: projectsById[a.project_id]?.name ?? a.project_id,
+        live: live.has(a.id),
+        waiting: waitingAgents.has(a.id),
+      });
+    }
+    const rank = (it: SwitcherItem) => (it.waiting ? 0 : it.live ? 1 : 2);
+    items.sort(
+      (x, y) => rank(x) - rank(y) || y.agent.created_at - x.agent.created_at,
+    );
+    return items;
+  }, [runningList, agents, live, waitingAgents, projectsById]);
+
+  // Is remote control configured? Re-checked on mount and after Settings change.
+  const refreshRemote = useCallback(() => {
+    api.remoteStatus().then((s) => setRemoteOn(s.configured)).catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshRemote();
+  }, [refreshRemote]);
+
+  // Publish waiting prompts to the hosted dashboard so they can be answered
+  // remotely, and resolve them when the agent stops waiting locally. Best-effort
+  // and content-gated (only re-POST when the prompt changes). No-op when off.
+  useEffect(() => {
+    if (!remoteOn) return;
+    for (const id of waitingAgents) {
+      const rec = agentsById[id];
+      const project = rec ? (projectsById[rec.project_id]?.name ?? "") : "";
+      const title = rec?.title ?? "Agent";
+      const question = waitingQuestion[id] ?? "";
+      const options = waitingOptions[id] ?? [];
+      const textMode = !!waitingTextMode[id];
+      const sig = JSON.stringify([project, title, question, options, textMode]);
+      if (pubSigRef.current[id] === sig) continue;
+      pubSigRef.current[id] = sig;
+      void api
+        .remoteNotify({ agentId: id, project, title, question, options, textMode, kind: "waiting" })
+        .catch(() => {});
+    }
+    // Anything we previously published that's no longer waiting → resolve it.
+    for (const id of Object.keys(pubSigRef.current)) {
+      if (!waitingAgents.has(id)) {
+        delete pubSigRef.current[id];
+        void api.remoteResolve(id).catch(() => {});
+      }
+    }
+  }, [remoteOn, waitingAgents, waitingQuestion, waitingOptions, waitingTextMode, agentsById, projectsById]);
+
+  // A reply made from the dashboard was applied to a local agent's pty by the
+  // backend poller → clear its "needs you" flag here too.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    api.onRemoteReply((id) => clearWaiting(id)).then((u) => {
+      un = u;
+    });
+    return () => un?.();
+  }, []);
 
   // Stopped/archived agents not already pinned as grid tiles (for "resume").
   const inactiveAgents = useMemo(() => {
@@ -1441,6 +1864,8 @@ export default function App() {
     // Project + window (always).
     cmds.push({ id: "open-project", label: "Open project…", hint: "Project", run: () => void openFolder() });
     cmds.push({ id: "new-window", label: "New window", hint: "Window", run: () => api.openWindow() });
+    if (switchableAgents.length > 0)
+      cmds.push({ id: "switch-agent", label: "Switch agent…", hint: "⌘⇧E", run: () => setSwitcherOpen(true) });
 
     // Right-side panels — only exist on the project workspace page.
     if (view === "workspace" && project) {
@@ -1470,6 +1895,13 @@ export default function App() {
         onOpenFile={openPaletteFile}
         onClose={() => setPaletteOpen(false)}
       />
+      <AgentSwitcher
+        open={switcherOpen}
+        items={switchableAgents}
+        onSelect={openAgentFromHome}
+        onClose={() => setSwitcherOpen(false)}
+      />
+      <NotificationCenter onJump={openAgentFromHome} activeAgentId={activeAgentId} />
       <SettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -1480,10 +1912,13 @@ export default function App() {
         setAlwaysOnTop={setAlwaysOnTop}
         judgeEnabled={judgeEnabled}
         setJudgeEnabled={setJudgeEnabled}
+        autoContinueRL={autoContinueRL}
+        setAutoContinueRL={setAutoContinueRL}
         agents={agentConfigs}
         setAgents={setAgentConfigs}
         initialTab={settingsTab}
         onTasksChanged={refreshAllTasks}
+        onRemoteChanged={refreshRemote}
       />
       {dup && (
         <div className="set-overlay" onClick={() => setDup(null)} role="dialog" aria-modal="true">
@@ -1538,7 +1973,7 @@ export default function App() {
       <div className="ide">
         <div className="welcome">
           <div className="welcome-card">
-            <h1 className="welcome-title">Welcome to EvorIDE</h1>
+            <h1 className="welcome-title">Welcome to Evor</h1>
             <p className="welcome-lead">
               Run many coding agents at once — and always know which one needs you.
             </p>
@@ -1572,6 +2007,21 @@ export default function App() {
     );
   }
 
+  // Scope the Home overview to the active super-project, if one is selected.
+  const activeSuper = activeSuperId
+    ? superProjects.find((s) => s.id === activeSuperId) ?? null
+    : null;
+  const homeProjects = activeSuper
+    ? knownProjects.filter((p) => activeSuper.project_ids.includes(p.id))
+    : knownProjects;
+  const homeProjectIds = new Set(homeProjects.map((p) => p.id));
+  const homeRunningList = activeSuper
+    ? runningList.filter((a) => homeProjectIds.has(a.project_id))
+    : runningList;
+  const homeTasks = activeSuper
+    ? allTasksList.filter((t) => homeProjectIds.has(t.project_id))
+    : allTasksList;
+
   // Cross-project Home dashboard.
   if (view === "home") {
     return (
@@ -1580,22 +2030,53 @@ export default function App() {
           <ProjectRail
             projects={knownProjects}
             activeId={null}
+            currentProjectId={project?.id ?? null}
             homeActive
             runningByProject={runningByProject}
             waitingProjects={waitingProjects}
+            lastActivityByProject={lastActivityByProject}
+            superProjects={superProjects}
             onSelect={openProjectFromHome}
             onOpen={openFolder}
             onHome={() => setView("home")}
             onWorkspace={() => setView("grid")}
+            onCreateGroup={createGroupSeeded}
+            onSetGroupMembers={setGroupMembers}
+          />
+          <div className="home-col">
+          <SuperProjectBar
+            superProjects={superProjects}
+            projects={knownProjects}
+            activeId={activeSuperId}
+            onSelect={setActiveSuperId}
+            onCreate={(name) =>
+              api.createSuperProject(name).then((sp) => {
+                // Add optimistically so the just-created group can be selected
+                // before the async refresh lands (else the stale-filter guard
+                // would clear the selection).
+                setSuperProjects((prev) => [...prev, sp]);
+                setActiveSuperId(sp.id);
+                refreshSuperProjects();
+              }).catch(() => {})
+            }
+            onRename={(id, name) =>
+              void api.renameSuperProject(id, name).then(refreshSuperProjects).catch(() => {})
+            }
+            onDelete={(id) =>
+              void api.deleteSuperProject(id).then(refreshSuperProjects).catch(() => {})
+            }
+            onSetMembers={(id, ids) =>
+              void api.setSuperProjectMembers(id, ids).then(refreshSuperProjects).catch(() => {})
+            }
           />
           <HomeView
-            projects={knownProjects}
-            runningList={runningList}
+            projects={homeProjects}
+            runningList={homeRunningList}
             waitingAgents={waitingAgents}
             waitingOptions={waitingOptions}
             waitingQuestion={waitingQuestion}
             textModes={waitingTextMode}
-            tasks={allTasksList}
+            tasks={homeTasks}
             clis={enabledAgentClis}
             canPlan={hasJudge}
             onOpenProject={openProjectFromHome}
@@ -1618,6 +2099,7 @@ export default function App() {
             onTasksRefresh={refreshAllTasks}
             onPushJira={(t) => void pushTaskToJira(t)}
           />
+          </div>
         </div>
         {jiraPicker}
         <HomeBar
@@ -1643,9 +2125,12 @@ export default function App() {
           <ProjectRail
             projects={knownProjects}
             activeId={null}
+            currentProjectId={project?.id ?? null}
             workspaceActive
             runningByProject={runningByProject}
             waitingProjects={waitingProjects}
+            lastActivityByProject={lastActivityByProject}
+            superProjects={superProjects}
             onSelect={(p) => {
               setProject(p);
               setView("workspace");
@@ -1653,6 +2138,8 @@ export default function App() {
             onOpen={openFolder}
             onHome={() => setView("home")}
             onWorkspace={() => setView("grid")}
+            onCreateGroup={createGroupSeeded}
+            onSetGroupMembers={setGroupMembers}
           />
           <Suspense fallback={<div className="grid-view" />}>
             <GridWorkspace
@@ -1706,7 +2193,7 @@ export default function App() {
     return (
       <div className="ide">
         <div className="welcome">
-          <h1>EvorIDE</h1>
+          <h1>Evor</h1>
           <p>Select a project to continue.</p>
           <button className="btn" onClick={() => setView("home")}>
             Go to Home
@@ -1723,8 +2210,11 @@ export default function App() {
         <ProjectRail
           projects={knownProjects}
           activeId={project.id}
+          currentProjectId={project.id}
           runningByProject={runningByProject}
           waitingProjects={waitingProjects}
+          lastActivityByProject={lastActivityByProject}
+          superProjects={superProjects}
           onSelect={(p) => {
             setProject(p);
             setView("workspace");
@@ -1732,12 +2222,15 @@ export default function App() {
           onOpen={openFolder}
           onHome={() => setView("home")}
           onWorkspace={() => setView("grid")}
+          onCreateGroup={createGroupSeeded}
+          onSetGroupMembers={setGroupMembers}
         />
         <AgentsColumn
           agents={activeAgents}
           archived={archivedAgents}
           live={live}
           waiting={waitingAgents}
+          rateLimited={rateLimited}
           states={agentState}
           clis={enabledAgentClis}
           activeAgentId={activeAgentId}
@@ -1844,6 +2337,13 @@ export default function App() {
                   onCreateConfig={refreshRunConfig}
                   onSetupAi={() => setRunSetupOpen(true)}
                 />
+                <PauseControl
+                  paused={pausedProjects.has(project.id)}
+                  pausingSeconds={pausing?.projectId === project.id ? pausing.secondsLeft : null}
+                  hasLive={agents.some((a) => live.has(a.id))}
+                  onPause={() => void pauseProject()}
+                  onResume={() => void resumeProject()}
+                />
               </div>
               <span className="tb-sep" aria-hidden="true" />
               <NewAgentMenu
@@ -1876,6 +2376,20 @@ export default function App() {
                   >
                     ⊞
                   </button>
+                  {activeAgentId !== splitAgentId && (
+                    <button
+                      className={`btn-sm icon ${split ? "on" : ""}`}
+                      onClick={() => (split ? closeSplit() : void openSplitTerminal())}
+                      title={
+                        split
+                          ? "Close the split pane"
+                          : "Split: open a terminal beside this one to run commands"
+                      }
+                      aria-label="Split pane"
+                    >
+                      ⊟
+                    </button>
+                  )}
                 </>
               )}
               {openFiles.length > 0 && (
@@ -1883,7 +2397,7 @@ export default function App() {
                   <span className="tb-sep" />
                   <div className="center-switch">
                     <button
-                      className={centerMode === "terminal" ? "on" : ""}
+                      className={centerMode === "terminal" && !editorInSplit ? "on" : ""}
                       onClick={() => setCenterMode("terminal")}
                       title="Show terminal"
                       aria-label="Show terminal"
@@ -1891,14 +2405,32 @@ export default function App() {
                       &gt;_
                     </button>
                     <button
-                      className={centerMode === "editor" ? "on" : ""}
-                      onClick={() => setCenterMode("editor")}
+                      className={centerMode === "editor" && !editorInSplit ? "on" : ""}
+                      onClick={() => {
+                        // Going full-screen editor collapses an editor split.
+                        setSplit((s) => (s?.kind === "editor" ? null : s));
+                        setCenterMode("editor");
+                      }}
                       title={`Show files (${openFiles.length} open)`}
                       aria-label="Show files"
                     >
                       📄 {openFiles.length}
                     </button>
                   </div>
+                  {activeIsLive && activeAgentId && !poppedOut.has(activeAgentId) && (
+                    <button
+                      className={`btn-sm icon ${editorInSplit ? "on" : ""}`}
+                      onClick={() => (editorInSplit ? closeSplit() : openSplitEditor())}
+                      title={
+                        editorInSplit
+                          ? "Close the side-by-side file view"
+                          : "Open the files beside the agent"
+                      }
+                      aria-label="Open files to the side"
+                    >
+                      ◧
+                    </button>
+                  )}
                 </>
               )}
               <span className="tb-sep" />
@@ -1934,17 +2466,18 @@ export default function App() {
           <Suspense fallback={<div className="main-body" />}>
           <div className="main-body">
             <div className="term-area">
-              {/* Center shows ONE of: diff, file editor, or the agent terminal. */}
+              {/* Center shows a diff, a full-screen editor, or the agent terminal
+                  — the last optionally split with a second pane (shell or files). */}
               {diffView ? (
-                <div className="term-slot">
+                <div key="diff" className="term-slot">
                   <DiffView
                     cwd={project.path}
                     file={diffView.file}
                     onClose={() => setDiffView(null)}
                   />
                 </div>
-              ) : centerMode === "editor" && openFiles.length > 0 ? (
-                <div className="term-slot center-fill">
+              ) : !editorInSplit && centerMode === "editor" && openFiles.length > 0 ? (
+                <div key="editor" className="term-slot center-fill">
                   <Editor
                     files={openFiles}
                     activePath={activeFile}
@@ -1956,7 +2489,7 @@ export default function App() {
                   />
                 </div>
               ) : activeIsLive && activeAgentId && poppedOut.has(activeAgentId) ? (
-                <div className="term-slot term-placeholder">
+                <div key="popped" className="term-slot term-placeholder">
                   <p>⧉ This terminal is popped out into its own window.</p>
                   <div className="ph-actions">
                     <button className="btn" onClick={() => void api.closePopout(activeAgentId)}>
@@ -1965,33 +2498,114 @@ export default function App() {
                   </div>
                 </div>
               ) : activeIsLive && activeAgentId ? (
-                <div className="term-slot">
-                  <AgentTerminal
-                    key={activeAgentId}
-                    id={activeAgentId}
-                    active
-                    mode={termMode}
-                    onInput={() => clearWaiting(activeAgentId)}
-                    onUrl={(url) =>
-                      setUrlByAgent((prev) =>
-                        prev[activeAgentId] === url
-                          ? prev
-                          : { ...prev, [activeAgentId]: url },
-                      )
-                    }
-                    onIssue={(context) =>
-                      setLiveIssue({ id: activeAgentId, context })
-                    }
-                    onTitle={(title) => autoTitleAgent(activeAgentId, title)}
-                  />
-                  {liveIssue?.id === activeAgentId && (
-                    <button className="fix-overlay" onClick={fixLiveIssue}>
-                      ⚠ Fix this issue
-                    </button>
+                <div
+                  key="terminal"
+                  className={`term-slot term-host-wrap${
+                    showSplit && split ? ` term-split term-split-${split.dir}` : ""
+                  }`}
+                >
+                  <div
+                    className={`term-pane${
+                      showSplit && activePane === "main" ? " pane-active" : ""
+                    }`}
+                    onMouseDownCapture={showSplit ? () => setActivePane("main") : undefined}
+                  >
+                    <AgentTerminal
+                      key={activeAgentId}
+                      id={activeAgentId}
+                      active
+                      mode={termMode}
+                      onInput={() => clearWaiting(activeAgentId)}
+                      onUrl={(url) =>
+                        setUrlByAgent((prev) =>
+                          prev[activeAgentId] === url
+                            ? prev
+                            : { ...prev, [activeAgentId]: url },
+                        )
+                      }
+                      onIssue={(context) =>
+                        setLiveIssue({ id: activeAgentId, context })
+                      }
+                      onTitle={(title) => autoTitleAgent(activeAgentId, title)}
+                    />
+                    {liveIssue?.id === activeAgentId && (
+                      <button className="fix-overlay" onClick={fixLiveIssue}>
+                        ⚠ Fix this issue
+                      </button>
+                    )}
+                  </div>
+                  {showSplit && split && (
+                    <div
+                      className={`term-pane term-pane-split${
+                        activePane === "split" ? " pane-active" : ""
+                      }`}
+                      onMouseDownCapture={() => setActivePane("split")}
+                    >
+                      <div className="split-head">
+                        <div className="split-tabs">
+                          <button
+                            className={`split-tab${split.kind === "shell" ? " on" : ""}`}
+                            onClick={() => void setSplitKind("shell")}
+                            title="Show a terminal in this pane"
+                          >
+                            &gt;_
+                          </button>
+                          {openFiles.length > 0 && (
+                            <button
+                              className={`split-tab${split.kind === "editor" ? " on" : ""}`}
+                              onClick={() => void setSplitKind("editor")}
+                              title="Show the open files in this pane"
+                            >
+                              📄 {openFiles.length}
+                            </button>
+                          )}
+                        </div>
+                        <div className="split-acts">
+                          <button
+                            className="split-btn"
+                            onClick={toggleSplitDir}
+                            title={split.dir === "row" ? "Stack below" : "Place side by side"}
+                            aria-label="Toggle split orientation"
+                          >
+                            {split.dir === "row" ? "▤" : "▥"}
+                          </button>
+                          <button
+                            className="split-close"
+                            onClick={closeSplit}
+                            title="Close split"
+                            aria-label="Close split"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                      <div className="split-body">
+                        {split.kind === "editor" ? (
+                          <Editor
+                            key="split-editor"
+                            files={openFiles}
+                            activePath={activeFile}
+                            previewPath={previewFile}
+                            onActivate={setActiveFile}
+                            onClose={closeFile}
+                            onMakePermanent={makeFilePermanent}
+                            mode={termMode}
+                          />
+                        ) : splitAgentId ? (
+                          <AgentTerminal
+                            key={splitAgentId}
+                            id={splitAgentId}
+                            active
+                            mode={termMode}
+                            onInput={() => clearWaiting(splitAgentId)}
+                          />
+                        ) : null}
+                      </div>
+                    </div>
                   )}
                 </div>
               ) : activeRec ? (
-                <div className="term-slot term-placeholder">
+                <div key="idle" className="term-slot term-placeholder">
                   {agentIssues[activeRec.id] && (
                     <p className="ph-issue">⚠ This run hit an issue.</p>
                   )}
@@ -2009,7 +2623,7 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="term-slot launcher-slot">
+                <div key="home" className="term-slot launcher-slot">
                   <ProjectHome
                     project={project}
                     git={git}

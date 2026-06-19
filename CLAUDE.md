@@ -48,18 +48,51 @@ EvorIDE is a Tauri desktop app: the webview calls ~84 Rust `#[tauri::command]`s 
 
 8. **Robustness = security.** A panic in a command handler is a DoS. Don't `.unwrap()` on attacker-influenced data, and truncate strings on a UTF-8 char boundary (see `git::diff`).
 
-<!-- evoride:tasks:start -->
-## Find your tasks (EvorIDE)
-To find the tasks for THIS project (the one you're working in), read the JSON file at `$EVORIDE_PROJECT_TASKS` — e.g. `cat "$EVORIDE_PROJECT_TASKS"`. It's an array of the project's open tasks: `[{"id":"...","title":"...","status":"todo|doing","description":"...","steps":[...]}]`. If the user asks what to work on (or you need the current task), read it first and pick the relevant one. Empty array / missing file = no tracked tasks.
 
-## Task status (EvorIDE)
-You may be working a tracked task. As you make progress, append ONE json line to the file at `$EVORIDE_TASKS` so the board stays in sync:
-- When you start: `echo '{"status":"doing"}' >> "$EVORIDE_TASKS"`
-- When you finish: `echo '{"status":"done"}' >> "$EVORIDE_TASKS"`
-- If blocked/unsure: `echo '{"status":"todo","note":"why"}' >> "$EVORIDE_TASKS"`
-- To tick off a breakdown step: `echo '{"step":"<step title>","status":"done"}' >> "$EVORIDE_TASKS"`
-status is one of todo|doing|done. Report honestly and promptly.
-<!-- evoride:tasks:end -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 <!-- evoride:edits:start -->
 ## Edit tracking (EvorIDE)
@@ -67,3 +100,21 @@ After you create or modify a file, append ONE json line to the file at the path 
 `echo '{"file":"<repo-relative path>","info":"<short what/why>"}' >> "$EVORIDE_EDITS"`
 This lets EvorIDE show which files you changed in this session. Do it for every edit.
 <!-- evoride:edits:end -->
+
+<!-- evoride:tasks:start -->
+## Find your tasks (EvorIDE)
+To find the tasks for THIS project (the one you're working in), read the JSON file at `$EVORIDE_PROJECT_TASKS` — e.g. `cat "$EVORIDE_PROJECT_TASKS"`. It's an array of the project's open tasks: `[{"id":"...","title":"...","status":"todo|doing","description":"...","steps":[...]}]`. If the user asks what to work on (or you need the current task), read it first and pick the relevant one. Empty array / missing file = no tracked tasks.
+
+## Starting new work? Create the task first (EvorIDE)
+If you're about to start something that ISN'T already in `$EVORIDE_PROJECT_TASKS` (e.g. an idea from this chat), create an EvorIDE task for THIS project FIRST, before you start changing code — append ONE json line to `$EVORIDE_TASKS`:
+`echo '{"new_task":"<short title>","description":"<one line of what/why>"}' >> "$EVORIDE_TASKS"`
+It's created for the current project, marked in-progress, and linked to you automatically. Do this once per distinct piece of work; don't recreate a task that already exists. Do NOT create Jira (or other external) tickets unless the user explicitly asks.
+
+## Task status (EvorIDE)
+As you make progress on the current task, append ONE json line to `$EVORIDE_TASKS` so the board stays in sync:
+- When you start: `echo '{"status":"doing"}' >> "$EVORIDE_TASKS"`
+- When you finish: `echo '{"status":"done"}' >> "$EVORIDE_TASKS"`
+- If blocked/unsure: `echo '{"status":"todo","note":"why"}' >> "$EVORIDE_TASKS"`
+- To tick off a breakdown step: `echo '{"step":"<step title>","status":"done"}' >> "$EVORIDE_TASKS"`
+status is one of todo|doing|done. Report honestly and promptly.
+<!-- evoride:tasks:end -->

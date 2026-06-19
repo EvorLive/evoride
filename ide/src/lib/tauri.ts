@@ -17,6 +17,15 @@ export interface Project {
   created_at: number;
 }
 
+/** A named group of separate-repo projects, for the aggregate overview. */
+export interface SuperProject {
+  id: string;
+  name: string;
+  created_at: number;
+  /** Member project ids. */
+  project_ids: string[];
+}
+
 export interface AgentRecord {
   id: string;
   project_id: string;
@@ -24,7 +33,7 @@ export interface AgentRecord {
   command: string;
   cwd: string;
   created_at: number;
-  status: "running" | "exited" | "archived";
+  status: "running" | "exited" | "archived" | "paused";
 }
 
 export interface Step {
@@ -90,6 +99,18 @@ export interface ClaudeUsage {
 export const listProjects = () => invoke<Project[]>("list_projects");
 export const addProject = (path: string) => invoke<Project>("add_project", { path });
 export const removeProject = (id: string) => invoke("remove_project", { id });
+
+// --- super-projects (named groups of separate-repo projects) ---
+export const listSuperProjects = () =>
+  invoke<SuperProject[]>("list_super_projects");
+export const createSuperProject = (name: string) =>
+  invoke<SuperProject>("create_super_project", { name });
+export const renameSuperProject = (id: string, name: string) =>
+  invoke("rename_super_project", { id, name });
+export const deleteSuperProject = (id: string) =>
+  invoke("delete_super_project", { id });
+export const setSuperProjectMembers = (id: string, projectIds: string[]) =>
+  invoke("set_super_project_members", { id, projectIds });
 
 /** Native folder picker; returns the chosen path or null. */
 export async function pickFolder(): Promise<string | null> {
@@ -277,6 +298,11 @@ export const writeFile = (path: string, content: string) =>
 export const createFile = (path: string) => invoke("create_file", { path });
 /** Recursive repo-relative file list for the command palette. */
 export const listFiles = (path: string) => invoke<string[]>("list_files", { path });
+/// Listen for external filesystem changes under a project root (drives the
+/// explorer's auto-refresh). Fires with the affected project root path.
+export async function onFsChanged(cb: (root: string) => void): Promise<UnlistenFn> {
+  return listen<{ root: string }>("fs-changed", (ev) => cb(ev.payload.root));
+}
 
 // --- claude sessions ---
 export const claudeSessions = (cwd: string) =>
@@ -323,6 +349,10 @@ export interface Service {
   /// launched by bare name. Untrusted services (from a repo or AI-generated
   /// config) are NOT auto-run and require an explicit confirmation to spawn.
   trusted?: boolean;
+  /// Optional "stop" command run when the project is paused (e.g.
+  /// `docker compose down`). Derived by the backend for compose-/tilt-style up
+  /// commands, or read from the run config.
+  down?: string;
 }
 /// Native confirm dialog used before spawning an untrusted run command.
 export const confirmRun = (message: string) =>
@@ -334,6 +364,45 @@ export const createRunConfig = (path: string) =>
 /// Instruction to hand an agent so it writes ~/.evoride/{id}/runinfo.json.
 export const runSetupPrompt = (projectId: string) =>
   invoke<string>("run_setup_prompt", { projectId });
+/// Run a one-shot command to completion (e.g. `docker compose down` on pause).
+/// The backend only runs allow-listed dev tools, confined to the project root.
+export const runCommandOnce = (projectId: string, command: string, subdir?: string) =>
+  invoke<string>("run_command_once", { projectId, command, subdir });
+
+// --- project pause / resume ---
+export interface PausedItem {
+  id: string;
+  title: string;
+  command: string;
+  cwd: string;
+  kind: "ai" | "service";
+  down?: string;
+}
+export interface PauseManifest {
+  paused_at: number;
+  items: PausedItem[];
+}
+/// A long-running stack (compose/tilt) detected running under a terminal.
+export interface DetectedStack {
+  label: string;
+  down: string;
+  command: string;
+  pid: number;
+}
+/// Detect compose/tilt stacks running under an agent's terminal, so pause can
+/// tear down things started interactively (not just configured services).
+export const detectRunningStacks = (id: string) =>
+  invoke<DetectedStack[]>("detect_running_stacks", { id });
+/// Suspend an agent: kill its pty, keep its record as "paused" (resumable).
+export const pauseAgent = (id: string) => invoke("pause_agent", { id });
+export const savePauseManifest = (projectId: string, manifest: PauseManifest) =>
+  invoke("save_pause_manifest", { projectId, manifest });
+export const readPauseManifest = (projectId: string) =>
+  invoke<PauseManifest | null>("read_pause_manifest", { projectId });
+export const clearPauseManifest = (projectId: string) =>
+  invoke("clear_pause_manifest", { projectId });
+/// Ids of projects currently paused (so the header shows Resume after restart).
+export const pausedProjects = () => invoke<string[]>("paused_projects");
 
 // --- intent docs ---
 export interface IntentConfig {
@@ -362,11 +431,151 @@ export const agentEditCounts = (project: string) =>
 // --- settings & daily summaries ---
 export interface Settings {
   daily_summary: boolean;
+  auto_continue_rate_limit: boolean;
   skills_disabled?: string[];
 }
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setDailySummary = (enabled: boolean) =>
   invoke<Settings>("set_daily_summary", { enabled });
+export const setAutoContinueRateLimit = (enabled: boolean) =>
+  invoke<Settings>("set_auto_continue_rate_limit", { enabled });
+
+// --- remote control (evor.dev dashboard) ---
+export interface RemoteStatus {
+  enabled: boolean;
+  url: string;
+  has_token: boolean;
+  /** enabled AND a valid URL AND a token present — i.e. actually live. */
+  configured: boolean;
+}
+export const remoteStatus = () => invoke<RemoteStatus>("remote_status");
+export const setRemoteConfig = (url: string, enabled: boolean) =>
+  invoke<RemoteStatus>("set_remote_config", { url, enabled });
+/** Pass a token to store it, or null to clear it. Never read back. */
+export const setRemoteToken = (token: string | null) =>
+  invoke<RemoteStatus>("set_remote_token", { token });
+export const remoteNotify = (args: {
+  agentId: string;
+  project: string;
+  title: string;
+  question: string;
+  options: string[];
+  textMode: boolean;
+  kind: string;
+}) => invoke("remote_notify", args);
+export const remoteResolve = (agentId: string) =>
+  invoke("remote_resolve", { agentId });
+/** Fires when a reply made from the dashboard is applied to a local agent. */
+export async function onRemoteReply(
+  cb: (agentId: string) => void,
+): Promise<UnlistenFn> {
+  return listen<{ agent_id: string }>("remote-reply", (ev) =>
+    cb(ev.payload.agent_id),
+  );
+}
+
+// --- rate-limit auto-continue ---
+/// Detail an agent emits when it hits (or clears) a usage/session limit.
+export interface RateLimit {
+  id: string;
+  limited: boolean;
+  message: string;
+  /// Wall-clock reset, e.g. "2:20am" (empty if not parsed).
+  reset_clock: string;
+  /// IANA zone the clock is in, e.g. "Europe/Berlin" (empty → local).
+  reset_tz: string;
+  /// Exact reset time, unix seconds, when Claude printed `|<ts>` (else null).
+  reset_epoch?: number | null;
+}
+
+/// Global listener: an agent hit a usage/session limit (or it cleared).
+export async function onAgentRateLimited(
+  cb: (rl: RateLimit) => void,
+): Promise<UnlistenFn> {
+  return listen<RateLimit>("agent-rate-limited", (ev) => cb(ev.payload));
+}
+
+/// Resolve a rate-limit's reset moment to an absolute epoch-ms, or null if we
+/// can't (so the caller declines to auto-continue rather than guess). Exact
+/// `reset_epoch` wins; otherwise the wall-clock is interpreted in `reset_tz`
+/// (or local when empty) as the *next* occurrence of that time.
+export function resetAtMs(rl: RateLimit): number | null {
+  if (rl.reset_epoch && rl.reset_epoch > 0) return rl.reset_epoch * 1000;
+  const m = rl.reset_clock.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)$/i);
+  if (!m) return null;
+  let hour = parseInt(m[1], 10) % 12;
+  if (m[3].toLowerCase() === "pm") hour += 12;
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  const tz = rl.reset_tz || undefined;
+
+  // "Now" in the target zone, to pick the right calendar day for the clock.
+  const now = Date.now();
+  const parts = zonedParts(now, tz);
+  if (!parts) return null;
+  let target = zonedToEpoch(parts.y, parts.mo, parts.d, hour, min, tz);
+  if (target === null) return null;
+  // Reset times are always in the near future; if today's slot already passed,
+  // it's tomorrow's reset.
+  if (target <= now) target += 86_400_000;
+  return target;
+}
+
+/// Break an epoch-ms down into the wall-clock Y/M/D/H/M it shows in `tz`.
+function zonedParts(
+  ms: number,
+  tz: string | undefined,
+): { y: number; mo: number; d: number } | null {
+  try {
+    const f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const p = f.formatToParts(new Date(ms));
+    const g = (t: string) => parseInt(p.find((x) => x.type === t)?.value ?? "", 10);
+    const y = g("year"),
+      mo = g("month"),
+      d = g("day");
+    if ([y, mo, d].some((n) => Number.isNaN(n))) return null;
+    return { y, mo, d };
+  } catch {
+    return null; // invalid/unknown timeZone
+  }
+}
+
+/// Epoch-ms for a wall-clock Y/M/D H:M *in `tz`* (correcting for the zone's
+/// offset, DST included), via the standard "guess-then-measure-offset" trick.
+function zonedToEpoch(
+  y: number,
+  mo: number,
+  d: number,
+  h: number,
+  mi: number,
+  tz: string | undefined,
+): number | null {
+  const guess = Date.UTC(y, mo - 1, d, h, mi, 0);
+  try {
+    const f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const p = f.formatToParts(new Date(guess));
+    const g = (t: string) => parseInt(p.find((x) => x.type === t)?.value ?? "", 10);
+    const asTz = Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second"));
+    if (Number.isNaN(asTz)) return null;
+    const offset = asTz - guess; // how far ahead of UTC the zone is at `guess`
+    return guess - offset;
+  } catch {
+    return null;
+  }
+}
 
 // --- skills ---
 export interface SkillInfo {

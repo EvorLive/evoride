@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/logo.png" width="96" alt="EvorIDE logo" />
+<img src="docs/logo.png" width="96" alt="Evor logo" />
 
-# EvorIDE
+# Evor
 
 ### Run many coding agents at once — and always know which one needs you.
 
@@ -11,7 +11,7 @@ steer every agent across every project from one window, jump straight to the one
 blocked, and keep the **why** of your code next to the **what**.
 
 > **Why:** real agentic work means several agents, several repos, and constantly losing
-> track of which one is waiting on you. EvorIDE makes that one glance.
+> track of which one is waiting on you. Evor makes that one glance.
 
 **[⬇ Download](../../releases)** · **[📖 Docs & getting started](https://evorlive.github.io/evoride/)** · macOS · Windows · Linux
 
@@ -20,7 +20,7 @@ blocked, and keep the **why** of your code next to the **what**.
 
 <br />
 
-<img src="docs/screenshot.png" alt="EvorIDE dashboard — see which agents need your input across all your projects" width="900" />
+<img src="docs/screenshot.png" alt="Evor dashboard — see which agents need your input across all your projects" width="900" />
 
 <sub>The Home dashboard: which agents are <strong>waiting on you</strong> (with the actual question + one-click replies), what's running, and a daily recap — across every project.</sub>
 
@@ -35,10 +35,10 @@ single-agent, single-project, and tied to one vendor. Real work means **several 
 running at once, across **several repos**, and you constantly lose track of *what each one
 is doing*, *which one needs you*, and *why* a change was made.
 
-EvorIDE is a bet on a different shape:
+Evor is a bet on a different shape:
 
 - **Agent-agnostic.** It's a terminal-first workspace. If your agent runs in a shell
-  (`claude`, `codex`, `aider`, your own script…), EvorIDE can host it. No lock-in.
+  (`claude`, `codex`, `aider`, your own script…), Evor can host it. No lock-in.
 - **Project-centric.** Each project collects its agents, run commands, git, and intent in
   one place. Switch projects from a rail that tells you which ones are *waiting for you*.
 - **Intent-first.** The project's goals and decisions live *in the repo* (via
@@ -55,7 +55,7 @@ A small monorepo of composable pieces. The IDE is the flagship; the rest stand a
 
 | Component | What it is | Stack |
 |---|---|---|
-| **`ide/`** — EvorIDE | The multi-agent desktop IDE (the main app) | Tauri 2 · React · Vite |
+| **`ide/`** — Evor | The multi-agent desktop IDE (the main app) | Tauri 2 · React · Vite |
 | **`tui/`** — eterm | A "smart terminal": real pty shell + agent/error detection, opt-in cloud sync | Rust · ratatui |
 | **`server/`** — relay | WebSocket relay to view/control terminal sessions remotely | Rust · Axum |
 | **`web/`** — dashboard | Browser dashboard for live sessions (xterm.js) | Next.js |
@@ -64,7 +64,7 @@ A small monorepo of composable pieces. The IDE is the flagship; the rest stand a
 
 ---
 
-## EvorIDE features
+## Evor features
 
 Everything below works against **any** agent CLI — Claude Code and Codex are first-class,
 and you can [add your own](#add-your-own-agent) in one file.
@@ -112,7 +112,7 @@ and you can [add your own](#add-your-own-agent) in one file.
 - **Tauri prerequisites** for your OS — <https://tauri.app/start/prerequisites/>
   (on macOS: Xcode Command Line Tools)
 
-### Run EvorIDE (the IDE)
+### Run Evor (the IDE)
 ```bash
 cd ide
 pnpm install
@@ -159,7 +159,7 @@ data-driven/user-configurable. See the [roadmap](#roadmap).
 ## Architecture (1 minute)
 
 ```
-            ┌────────────── EvorIDE (Tauri) ──────────────┐
+            ┌────────────── Evor (Tauri) ──────────────┐
             │  React UI  ◄── invoke/events ──►  Rust core   │
             │                                  ├ session mgr (ptys)
  you ──────►│  rail · agents · terminal · git  ├ store (projects/agents/tasks)
@@ -188,7 +188,7 @@ The full tracked plan lives in the repo: [`.intentflow/roadmap.md`](.intentflow/
   themes, terminal discarding, waiting-for-input detection, command palette (⌘P / ⌘⇧P)
 - ✅ **AI run setup (autopilot)** — when a project's run isn't detected (Docker, monorepos,
   custom toolchains), an agent analyzes it hands-free and generates a run config at
-  `~/.evoride/{project}/runinfo.json` that EvorIDE uses to start it.
+  `~/.evoride/{project}/runinfo.json` that Evor uses to start it.
   → [plan](.intentflow/plans/ai-run-config.md)
 - ✅ **Tasks on the dashboard** — per-project + cross-project task board on Home, with AI
   planning, step breakdown, and duplicate detection

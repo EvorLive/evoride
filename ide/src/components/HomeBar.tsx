@@ -30,7 +30,7 @@ export default function HomeBar({
   return (
     <footer className="statusbar homebar">
       <div className="status-left">
-        <span className="status-ver">EvorIDE{version ? ` v${version}` : ""}</span>
+        <span className="status-ver">Evor{version ? ` v${version}` : ""}</span>
         <span className="hb-stat" title="Known projects">
           {projectCount} project{projectCount === 1 ? "" : "s"}
         </span>

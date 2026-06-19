@@ -16,7 +16,7 @@ export default class ErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("EvorIDE crashed:", error, info.componentStack);
+    console.error("Evor crashed:", error, info.componentStack);
   }
 
   render() {
@@ -38,7 +38,7 @@ export default class ErrorBoundary extends React.Component<
           textAlign: "center",
         }}
       >
-        <h1 style={{ fontSize: 18, margin: 0 }}>EvorIDE hit an error</h1>
+        <h1 style={{ fontSize: 18, margin: 0 }}>Evor hit an error</h1>
         <p style={{ margin: 0, opacity: 0.8, maxWidth: 560, fontSize: 13 }}>
           {String(error.message || error)}
         </p>

@@ -17,6 +17,19 @@ pub struct Project {
     pub created_at: i64,
 }
 
+/// A named container that groups several (separate-repo) projects together so
+/// their agents/tasks/git can be seen in one aggregate overview. Membership is
+/// stored as a nullable `super_project_id` column on each project; a project
+/// belongs to at most one super-project.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuperProject {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    /// Ids of the member projects (resolved on read).
+    pub project_ids: Vec<String>,
+}
+
 /// A historical (or live) agent within a project. `id` doubles as the live pty
 /// id while running.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +149,11 @@ impl Store {
                  path        TEXT NOT NULL,
                  created_at  INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS super_projects (
+                 id          TEXT PRIMARY KEY,
+                 name        TEXT NOT NULL,
+                 created_at  INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS agents (
                  id          TEXT PRIMARY KEY,
                  project_id  TEXT NOT NULL,
@@ -172,6 +190,8 @@ impl Store {
         ] {
             let _ = conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col}"), []);
         }
+        // Super-project membership on pre-existing project tables (nullable FK).
+        let _ = conn.execute("ALTER TABLE projects ADD COLUMN super_project_id TEXT", []);
     }
 
     fn is_empty(conn: &Connection) -> bool {
@@ -317,6 +337,101 @@ impl Store {
         let _ = conn.execute("DELETE FROM projects WHERE id = ?1", params![id]);
         let _ = conn.execute("DELETE FROM agents WHERE project_id = ?1", params![id]);
         let _ = conn.execute("DELETE FROM tasks WHERE project_id = ?1", params![id]);
+    }
+
+    // --- super-projects ---
+
+    /// Member project ids of a super-project, in creation order. Caller holds the
+    /// connection lock.
+    fn member_ids(conn: &Connection, super_id: &str) -> Vec<String> {
+        let mut stmt = match conn
+            .prepare("SELECT id FROM projects WHERE super_project_id = ?1 ORDER BY created_at")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = match stmt.query_map(params![super_id], |r| r.get::<_, String>(0)) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
+    pub fn list_super_projects(&self) -> Vec<SuperProject> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            match conn.prepare("SELECT id, name, created_at FROM super_projects ORDER BY created_at")
+            {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+        let rows = match stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        }) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        rows.filter_map(|r| r.ok())
+            .map(|(id, name, created_at)| SuperProject {
+                project_ids: Self::member_ids(&conn, &id),
+                id,
+                name,
+                created_at,
+            })
+            .collect()
+    }
+
+    pub fn create_super_project(&self, name: &str) -> SuperProject {
+        let sp = SuperProject {
+            id: gen_id("super"),
+            name: name.to_string(),
+            created_at: now(),
+            project_ids: Vec::new(),
+        };
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO super_projects (id, name, created_at) VALUES (?1, ?2, ?3)",
+            params![sp.id, sp.name, sp.created_at],
+        );
+        sp
+    }
+
+    pub fn rename_super_project(&self, id: &str, name: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE super_projects SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        );
+    }
+
+    pub fn delete_super_project(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        // Detach members first so projects survive the group's deletion.
+        let _ = conn.execute(
+            "UPDATE projects SET super_project_id = NULL WHERE super_project_id = ?1",
+            params![id],
+        );
+        let _ = conn.execute("DELETE FROM super_projects WHERE id = ?1", params![id]);
+    }
+
+    /// Replace the full membership of a super-project. A project belongs to one
+    /// super-project, so listed projects are (re)assigned and dropped ones detached.
+    pub fn set_super_project_members(&self, id: &str, project_ids: &[String]) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE projects SET super_project_id = NULL WHERE super_project_id = ?1",
+            params![id],
+        );
+        for pid in project_ids {
+            let _ = conn.execute(
+                "UPDATE projects SET super_project_id = ?1 WHERE id = ?2",
+                params![id, pid],
+            );
+        }
     }
 
     // --- agents ---

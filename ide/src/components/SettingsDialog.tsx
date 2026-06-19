@@ -3,7 +3,7 @@ import * as api from "../lib/tauri";
 import type { SkillInfo } from "../lib/tauri";
 import type { AgentConfig } from "../lib/agents";
 
-type Tab = "general" | "agents" | "skills" | "jira";
+type Tab = "general" | "agents" | "skills" | "jira" | "remote";
 
 // A simple on/off switch row.
 function Toggle({
@@ -146,6 +146,132 @@ function JiraTab() {
   );
 }
 
+// The Remote tab: connect this IDE to the hosted Evor dashboard (evor.dev) so
+// agent-waiting prompts can be answered from anywhere. Create a device in the
+// dashboard, paste its one-time token + the server URL here.
+function RemoteTab({ onChanged }: { onChanged?: () => void }) {
+  const [url, setUrl] = useState("");
+  const [enabled, setEnabled] = useState(false);
+  const [token, setToken] = useState("");
+  const [hasToken, setHasToken] = useState(false);
+  const [configured, setConfigured] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const apply = (s: api.RemoteStatus) => {
+    setUrl(s.url);
+    setEnabled(s.enabled);
+    setHasToken(s.has_token);
+    setConfigured(s.configured);
+  };
+
+  useEffect(() => {
+    api.remoteStatus().then(apply).catch(() => {});
+  }, []);
+
+  const note = (m: string, isErr = false) => {
+    setMsg(isErr ? "" : m);
+    setErr(isErr ? m : "");
+  };
+  const fail = (e: unknown) =>
+    note(typeof e === "string" ? e : (e as Error)?.message || "Failed.", true);
+
+  // Persist URL + enabled together. If a token is staged, save it first so
+  // enabling can immediately become "configured".
+  const save = async (nextEnabled: boolean) => {
+    setBusy(true);
+    note("");
+    try {
+      if (token.trim()) {
+        apply(await api.setRemoteToken(token.trim()));
+        setToken("");
+      }
+      apply(await api.setRemoteConfig(url.trim(), nextEnabled));
+      note("Saved.");
+      onChanged?.();
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearToken = async () => {
+    setBusy(true);
+    note("");
+    try {
+      apply(await api.setRemoteToken(null));
+      note("Token cleared.");
+      onChanged?.();
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="set-section">
+      <div className="set-section-title">Remote control</div>
+      <p className="set-row-hint" style={{ marginBottom: 14 }}>
+        Push “agent is waiting for you” prompts to the Evor dashboard and answer
+        them from your phone or browser. In the dashboard open{" "}
+        <strong>Devices</strong>, add a device, then paste its server URL + token
+        here.
+      </p>
+
+      <Toggle
+        label="Enable remote control"
+        hint={
+          configured
+            ? "Connected. Waiting prompts sync to the dashboard; replies come back automatically."
+            : "Add a URL and token below, then enable."
+        }
+        checked={enabled}
+        onChange={(v) => void save(v)}
+      />
+
+      <label className="jira-field">
+        <span>Dashboard URL</span>
+        <input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://evor.dev"
+          spellCheck={false}
+        />
+      </label>
+      <label className="jira-field">
+        <span>Device token</span>
+        <input
+          type="password"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder={hasToken ? "•••••••• (saved — leave blank to keep)" : "paste device token"}
+        />
+      </label>
+
+      {(msg || err) && <p className={`jira-status ${err ? "err" : ""}`}>{err || msg}</p>}
+
+      <div className="jira-actions">
+        <button className="btn primary" onClick={() => void save(enabled)} disabled={busy}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+        {hasToken && (
+          <button
+            className="btn-ghost danger"
+            onClick={() => void clearToken()}
+            disabled={busy}
+            style={{ marginLeft: "auto" }}
+          >
+            Clear token
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Preferences dialog — opened from the File ▸ Settings… menu (⌘,), the gear
 // icon, or the command palette. Works the same on macOS and Windows.
 export default function SettingsDialog({
@@ -158,9 +284,12 @@ export default function SettingsDialog({
   setAlwaysOnTop,
   judgeEnabled,
   setJudgeEnabled,
+  autoContinueRL,
+  setAutoContinueRL,
   agents,
   setAgents,
   initialTab = "general",
+  onRemoteChanged,
 }: {
   open: boolean;
   onClose: () => void;
@@ -171,12 +300,16 @@ export default function SettingsDialog({
   setAlwaysOnTop: (v: boolean) => void;
   judgeEnabled: boolean;
   setJudgeEnabled: (v: boolean) => void;
+  autoContinueRL: boolean;
+  setAutoContinueRL: (v: boolean) => void;
   agents: AgentConfig[];
   setAgents: (a: AgentConfig[]) => void;
   /** Which tab to open on (e.g. "jira" from the Home shortcut). */
   initialTab?: Tab;
   /** Called after a Jira sync / auto-assign so the board can refresh. */
   onTasksChanged?: () => void;
+  /** Called after remote-control settings change so the app can re-check state. */
+  onRemoteChanged?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [dailySummary, setDailySummary] = useState(true);
@@ -235,6 +368,11 @@ export default function SettingsDialog({
     api.setDailySummary(v).catch(() => {});
   };
 
+  const toggleAutoContinue = (v: boolean) => {
+    setAutoContinueRL(v);
+    api.setAutoContinueRateLimit(v).catch(() => {});
+  };
+
   // Toggle a skill: flip it locally for instant feedback, then persist + (un)install.
   const toggleSkill = (id: string, enabled: boolean) => {
     setSkills((prev) => prev.map((s) => (s.id === id ? { ...s, enabled } : s)));
@@ -272,6 +410,7 @@ export default function SettingsDialog({
     { id: "agents", label: "Agents" },
     { id: "skills", label: "Skills" },
     { id: "jira", label: "Jira" },
+    { id: "remote", label: "Remote" },
   ];
 
   return (
@@ -329,7 +468,7 @@ export default function SettingsDialog({
               <div className="set-section">
                 <div className="set-section-title">About</div>
                 <div className="set-about">
-                  <span>EvorIDE{version ? ` v${version}` : ""}</span>
+                  <span>Evor{version ? ` v${version}` : ""}</span>
                   <a href="https://github.com/EvorLive/evoride" target="_blank" rel="noreferrer">
                     github.com/EvorLive/evoride
                   </a>
@@ -351,6 +490,12 @@ export default function SettingsDialog({
                   }
                   checked={judgeEnabled && !!helper}
                   onChange={setJudgeEnabled}
+                />
+                <Toggle
+                  label="Auto-continue after rate limit"
+                  hint="When an agent hits a usage/session limit, send “continue” the moment it resets so the task carries on unattended."
+                  checked={autoContinueRL}
+                  onChange={toggleAutoContinue}
                 />
                 <Toggle
                   label="Daily summary on Home"
@@ -488,6 +633,8 @@ export default function SettingsDialog({
           )}
 
           {tab === "jira" && <JiraTab />}
+
+          {tab === "remote" && <RemoteTab onChanged={onRemoteChanged} />}
         </div>
       </div>
     </div>

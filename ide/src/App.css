@@ -77,12 +77,21 @@ body {
 
 /* --- project rail (leftmost) --- */
 .prail {
-  width: 150px;
+  width: 200px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
   background: var(--bg);
+  position: relative;
+}
+/* Scrolls the project sections while brand/footer stay pinned. */
+.prail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 6px;
 }
 .prail-brand {
   display: flex;
@@ -119,8 +128,6 @@ body {
   list-style: none;
   margin: 0;
   padding: 0 6px;
-  flex: 1;
-  overflow: auto;
 }
 .prail-item {
   display: flex;
@@ -189,7 +196,7 @@ body {
   padding: 8px;
 }
 .prail-add {
-  margin: 8px;
+  flex: 1;
   padding: 7px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -200,6 +207,154 @@ body {
 }
 .prail-add:hover {
   color: var(--fg);
+  border-color: var(--brand);
+}
+.prail-groupinput {
+  flex: 1;
+  min-width: 0;
+  padding: 7px;
+  background: var(--bg);
+  border: 1px solid var(--brand);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+/* Section heading that doubles as a collapse toggle. */
+.prail-section-toggle {
+  padding: 0;
+}
+.prail-section-toggle .prail-group-toggle {
+  padding: 9px 12px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 10px;
+}
+
+/* The active project's group, shown as a bordered card. */
+.prail-group {
+  margin: 4px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  overflow: hidden;
+}
+.prail-group-head {
+  display: flex;
+  align-items: center;
+}
+.prail-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  text-align: left;
+}
+.prail-group-toggle:hover {
+  color: var(--fg);
+}
+.prail-caret {
+  font-size: 9px;
+  width: 10px;
+  flex-shrink: 0;
+}
+.prail-group-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+}
+.prail-group-list {
+  padding: 0 4px;
+}
+.prail-group-list .prail-item {
+  font-size: 12px;
+}
+.prail-subadd,
+.prail-additem {
+  width: calc(100% - 8px);
+  margin: 2px 4px;
+  padding: 5px 8px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  font-size: 11.5px;
+  text-align: left;
+}
+.prail-subadd:hover,
+.prail-additem:hover {
+  color: var(--fg);
+  border-color: var(--brand);
+}
+.prail-addlist {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 4px;
+}
+.prail-additem {
+  border-style: solid;
+}
+
+/* "last worked on" age badge on a project row. */
+.prail-age {
+  font-size: 9.5px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  border-radius: 999px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+/* Remove-from-group affordance, revealed on row hover. */
+.prail-rm {
+  font-size: 10px;
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+  opacity: 0;
+  padding: 0 2px;
+}
+.prail-item:hover .prail-rm {
+  opacity: 0.7;
+}
+.prail-rm:hover {
+  opacity: 1;
+  color: var(--danger, #e5484d);
+}
+
+/* Pinned footer with New group / Open. */
+.prail-foot {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* Right-edge drag handle to resize the rail. */
+.prail-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+}
+.prail-resize:hover {
+  background: color-mix(in srgb, var(--brand) 40%, transparent);
 }
 
 /* --- buttons --- */
@@ -649,6 +804,19 @@ body {
   border-radius: 9px;
   vertical-align: middle;
 }
+/* Agent is blocked on a usage/session limit; auto-continue is scheduled. */
+.agent-rl-pill {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #a974ff;
+  border: 1px solid color-mix(in srgb, #a974ff 45%, var(--border));
+  background: color-mix(in srgb, #a974ff 12%, transparent);
+  padding: 0 5px;
+  border-radius: 9px;
+  vertical-align: middle;
+}
 
 /* Compacted "Offline" group: stopped agents tucked below the live ones. */
 .offline-section {
@@ -999,6 +1167,96 @@ body {
   height: 100%;
   width: 100%;
   padding: 6px;
+}
+
+/* Split pane: the active agent terminal next to (or above) a second pane that
+   holds a throwaway shell or the open files. Orientation is row or column. */
+.term-host-wrap {
+  display: flex;
+}
+.term-split-row {
+  flex-direction: row;
+}
+.term-split-col {
+  flex-direction: column;
+}
+.term-pane {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+/* The active pane gets a subtle brand outline so it reads as the focused window. */
+.term-pane.pane-active {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent);
+}
+.term-pane-split {
+  display: flex;
+  flex-direction: column;
+}
+.term-split-row .term-pane-split {
+  border-left: 1px solid var(--border);
+}
+.term-split-col .term-pane-split {
+  border-top: 1px solid var(--border);
+}
+.split-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 2px 6px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.split-tabs {
+  display: flex;
+  gap: 2px;
+}
+.split-tab {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.split-tab:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+.split-tab.on {
+  background: color-mix(in srgb, var(--brand) 22%, transparent);
+  color: var(--fg);
+}
+.split-acts {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.split-btn,
+.split-close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.split-btn:hover,
+.split-close:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+.split-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 /* Right-click context menu for the terminal (Copy / Paste / Select All / Clear). */
@@ -1469,6 +1727,29 @@ body {
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
   color: var(--danger);
 }
+.btn-sm.pause {
+  background: color-mix(in srgb, var(--warning, #d6a019) 14%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--warning, #d6a019) 40%, var(--border));
+  color: var(--warning, #d6a019);
+}
+.btn-sm.pausing {
+  background: color-mix(in srgb, var(--warning, #d6a019) 14%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--warning, #d6a019) 40%, var(--border));
+  color: var(--warning, #d6a019);
+  cursor: default;
+  animation: pause-pulse 1s ease-in-out infinite;
+}
+@keyframes pause-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.btn-sm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-sm:disabled:hover {
+  border-color: var(--border);
+}
 
 /* New-agent launcher menu (per-agent enable/disable lives here). */
 .newagent {
@@ -1818,6 +2099,15 @@ body {
   display: flex;
 }
 .center-fill .editor {
+  width: 100%;
+  height: 100%;
+  border-left: none;
+  resize: none;
+}
+/* The editor hosted inside a split pane fills it like the terminal does. */
+.split-body .editor {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   border-left: none;
@@ -3241,10 +3531,141 @@ body {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+.home-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 .home {
   flex: 1;
   overflow: auto;
   background: var(--bg);
+}
+
+/* ---- SuperProjectBar: group filter above the Home dashboard ---- */
+.spb {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.spb-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.spb-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.spb-pill:hover {
+  border-color: var(--brand);
+}
+.spb-pill.active {
+  background: color-mix(in srgb, var(--brand) 18%, transparent);
+  border-color: var(--brand);
+}
+.spb-pill.spb-new {
+  color: var(--fg-subtle);
+  border-style: dashed;
+}
+.spb-pill.spb-newinput {
+  border-color: var(--brand);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  width: 130px;
+}
+.spb-count {
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+.spb-tools {
+  display: flex;
+  gap: 6px;
+}
+.spb-tool {
+  background: transparent;
+  border: none;
+  color: var(--fg-subtle);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.spb-tool:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.spb-tool.del:hover {
+  color: var(--danger, #e5484d);
+}
+.spb-members {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  max-height: 240px;
+  overflow: auto;
+}
+.spb-members-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-subtle);
+  margin-bottom: 4px;
+}
+.spb-members-empty {
+  font-size: 12px;
+  color: var(--fg-subtle);
+  padding: 4px;
+}
+.spb-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.spb-member:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.spb-member-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.spb-member-path {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+  direction: rtl;
+  text-align: right;
 }
 .home-inner {
   max-width: 940px;
@@ -4420,6 +4841,39 @@ body {
   white-space: nowrap;
 }
 
+/* ---- AgentSwitcher rows (⌘E): status dot · title · command · project ---- */
+.sw-row {
+  align-items: center;
+}
+.sw-row .dot {
+  flex-shrink: 0;
+}
+.sw-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sw-cmd {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  font-family: var(--mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.sw-project {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---- TaskCard: shared task row with description, steps, and agent handoff ---- */
 .tc-list {
   list-style: none;
@@ -4686,3 +5140,179 @@ body {
   white-space: nowrap;
 }
 .tc-dot.verified { color: var(--live); }
+
+/* --- Global notification center (toasts + inbox bell) --- */
+.notif-root {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none; /* children re-enable; lets clicks pass through the gaps */
+}
+.notif-root button { pointer-events: auto; }
+
+.notif-toasts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+.notif-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 320px;
+  max-width: 70vw;
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  border-radius: 8px;
+  color: var(--fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  animation: notif-in 160ms ease-out;
+}
+.notif-toast.kind-waiting { border-left-color: var(--warn); }
+.notif-toast.kind-done { border-left-color: var(--live); }
+.notif-toast.kind-error { border-left-color: var(--danger); }
+.notif-toast:hover { background: var(--surface); }
+
+@keyframes notif-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.notif-icon { font-size: 15px; margin-top: 1px; color: var(--fg-muted); }
+.notif-icon.kind-waiting { color: var(--warn); }
+.notif-icon.kind-done { color: var(--live); }
+.notif-icon.kind-error { color: var(--danger); }
+
+.notif-toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.notif-toast-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notif-toast-sub { font-size: 11px; color: var(--fg-muted); }
+.notif-toast-q {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.notif-x {
+  pointer-events: auto;
+  color: var(--fg-subtle);
+  font-size: 12px;
+  padding: 2px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.notif-x:hover { color: var(--fg); background: var(--border); }
+
+/* Bell */
+.notif-bell-wrap { position: relative; }
+.notif-bell {
+  pointer-events: auto;
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.notif-bell:hover { color: var(--fg); background: var(--surface); }
+.notif-bell.has-unread { color: var(--fg); border-color: var(--brand); }
+.notif-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Inbox dropdown */
+.notif-inbox {
+  pointer-events: auto;
+  position: absolute;
+  right: 0;
+  bottom: 46px;
+  width: 340px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.notif-inbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13px;
+}
+.notif-clear {
+  pointer-events: auto;
+  background: none;
+  border: none;
+  color: var(--brand);
+  font-size: 12px;
+  cursor: pointer;
+}
+.notif-clear:hover { text-decoration: underline; }
+.notif-inbox-list { overflow-y: auto; }
+.notif-empty { padding: 24px 12px; text-align: center; color: var(--fg-subtle); font-size: 12px; }
+.notif-item {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  cursor: pointer;
+}
+.notif-item:hover { background: var(--surface-2); }
+.notif-item-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.notif-item-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notif-item-sub { font-size: 11px; color: var(--fg-muted); }
+.notif-item-q {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

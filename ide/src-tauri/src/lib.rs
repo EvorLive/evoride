@@ -10,6 +10,9 @@ mod guard;
 mod intent;
 mod jira;
 mod judge;
+mod pause;
+mod proctree;
+mod remote;
 mod run;
 mod secrets;
 mod session;
@@ -18,6 +21,7 @@ mod skills;
 mod store;
 mod summary;
 mod tasktrack;
+mod watch;
 
 use claude::{ClaudeSession, ClaudeUsage};
 use edits::EditRecord;
@@ -59,7 +63,7 @@ fn open_window(app: AppHandle) -> Result<(), String> {
     let n = WINDOW_SEQ.fetch_add(1, Ordering::Relaxed);
     let label = format!("w-{n}");
     WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
-        .title("EvorIDE")
+        .title("Evor")
         .inner_size(1280.0, 820.0)
         .maximized(true)
         .build()
@@ -149,8 +153,10 @@ fn close_popout(app: AppHandle, id: String) {
 // --- projects ---
 
 #[tauri::command]
-fn add_project(store: State<Store>, path: String) -> Project {
-    store.add_project(&path)
+fn add_project(app: AppHandle, store: State<Store>, path: String) -> Project {
+    let project = store.add_project(&path);
+    watch::sync(&app); // start watching the newly-opened root for the explorer
+    project
 }
 
 #[tauri::command]
@@ -159,8 +165,36 @@ fn list_projects(store: State<Store>) -> Vec<Project> {
 }
 
 #[tauri::command]
-fn remove_project(store: State<Store>, id: String) {
-    store.remove_project(&id)
+fn remove_project(app: AppHandle, store: State<Store>, id: String) {
+    store.remove_project(&id);
+    watch::sync(&app); // stop watching the closed root
+}
+
+// --- super-projects (named groups of separate-repo projects) ---
+
+#[tauri::command]
+fn list_super_projects(store: State<Store>) -> Vec<store::SuperProject> {
+    store.list_super_projects()
+}
+
+#[tauri::command]
+fn create_super_project(store: State<Store>, name: String) -> store::SuperProject {
+    store.create_super_project(name.trim())
+}
+
+#[tauri::command]
+fn rename_super_project(store: State<Store>, id: String, name: String) {
+    store.rename_super_project(&id, name.trim());
+}
+
+#[tauri::command]
+fn delete_super_project(store: State<Store>, id: String) {
+    store.delete_super_project(&id);
+}
+
+#[tauri::command]
+fn set_super_project_members(store: State<Store>, id: String, project_ids: Vec<String>) {
+    store.set_super_project_members(&id, &project_ids);
 }
 
 // --- agents ---
@@ -506,6 +540,18 @@ fn archive_agent(store: State<Store>, manager: State<SessionManager>, id: String
 fn delete_agent(store: State<Store>, manager: State<SessionManager>, id: String) {
     let _ = manager.close(&id);
     store.delete_agent(&id);
+}
+
+/// Suspend an agent for a project PAUSE: kill its pty but KEEP its record with a
+/// distinct "paused" status — so it's excluded from the running list yet not
+/// reset to "exited" on the next boot (that reset only touches "running"), and
+/// `resume_agent` can bring it back in place (Claude with `--continue`, a service
+/// by re-running its command).
+#[tauri::command]
+fn pause_agent(store: State<Store>, manager: State<SessionManager>, id: String) -> Result<(), String> {
+    manager.close(&id)?;
+    store.set_agent_status(&id, "paused");
+    Ok(())
 }
 
 // --- tasks ---
@@ -1295,6 +1341,113 @@ fn run_setup_prompt(project_id: String) -> String {
     run::setup_instruction(&project_id)
 }
 
+/// Resolve a run-config `subdir` to an absolute path confined to the project
+/// root — rejecting absolute paths and `..` so an untrusted config can't point a
+/// spawned/run command outside the project (mirrors `spawn_agent`).
+fn confined_cwd(project_path: &str, subdir: Option<&str>) -> Result<String, String> {
+    match subdir.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(sub) => {
+            let rel = std::path::Path::new(sub);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err("invalid working directory".into());
+            }
+            Ok(std::path::Path::new(project_path)
+                .join(rel)
+                .to_string_lossy()
+                .to_string())
+        }
+        None => Ok(project_path.to_string()),
+    }
+}
+
+/// Run a command to completion (NOT a pty) and return its combined output tail.
+/// Used for one-shot lifecycle commands like `docker compose down` on PAUSE.
+/// SECURITY: only allow-listed bare dev tools run (same guard as run-config
+/// auto-run), and the cwd is confined to the project — a paused project's
+/// manifest / run config is untrusted input, so a tampered `down` command must
+/// not become arbitrary code execution. Args go through `.args()` (no shell).
+#[tauri::command]
+async fn run_command_once(
+    store: State<'_, Store>,
+    project_id: String,
+    command: String,
+    subdir: Option<String>,
+) -> Result<String, String> {
+    let project = store.get_project(&project_id).ok_or("unknown project")?;
+    if !run::command_is_trusted(&command) {
+        return Err(format!("refusing to run an untrusted command: {command}"));
+    }
+    let cwd = confined_cwd(&project.path, subdir.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut parts = command.split_whitespace();
+        let program = parts.next().unwrap_or_default();
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(parts);
+        cmd.current_dir(&cwd);
+        let out = cmd.output().map_err(|e| e.to_string())?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        s.push_str(&String::from_utf8_lossy(&out.stderr));
+        // Keep the tail, truncated on a char boundary (don't panic on bytes).
+        if s.len() > 8192 {
+            let from = (s.len() - 8192..=s.len())
+                .find(|&i| s.is_char_boundary(i))
+                .unwrap_or(s.len());
+            s = s[from..].to_string();
+        }
+        Ok(s)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// --- project pause / resume ---
+
+/// Save the manifest of everything suspended by a project PAUSE (agents +
+/// services), so Resume can restore it — and so the paused state survives a
+/// restart. The manifest is written to `~/.evoride/{id}/pause.json`.
+#[tauri::command]
+fn save_pause_manifest(project_id: String, manifest: pause::PauseManifest) -> Result<(), String> {
+    pause::write(&project_id, &manifest)
+}
+
+#[tauri::command]
+fn read_pause_manifest(project_id: String) -> Option<pause::PauseManifest> {
+    pause::read(&project_id)
+}
+
+#[tauri::command]
+fn clear_pause_manifest(project_id: String) {
+    pause::clear(&project_id);
+}
+
+/// Detect long-running stacks (docker/podman compose, tilt) started UNDER a
+/// terminal — i.e. typed into its shell or launched by an agent — so PAUSE can
+/// tear them down even when they aren't declared run-config services. Best-
+/// effort: returns empty if the agent isn't live or the platform has no walk.
+#[tauri::command]
+fn detect_running_stacks(manager: State<SessionManager>, id: String) -> Vec<proctree::DetectedStack> {
+    match manager.child_pid(&id) {
+        Some(pid) => proctree::running_under(pid),
+        None => Vec::new(),
+    }
+}
+
+/// Ids of every project currently paused (manifest present) — so the UI shows
+/// the Resume state after a restart.
+#[tauri::command]
+fn paused_projects(store: State<Store>) -> Vec<String> {
+    store
+        .list_projects()
+        .into_iter()
+        .map(|p| p.id)
+        .filter(|id| pause::is_paused(id))
+        .collect()
+}
+
 // --- intent docs ---
 
 // Intent commands write managed files (CLAUDE.md/AGENTS.md/.intentflow/…) under
@@ -1374,6 +1527,64 @@ fn get_settings(settings: State<SettingsStore>) -> Settings {
 #[tauri::command]
 fn set_daily_summary(settings: State<SettingsStore>, enabled: bool) -> Settings {
     settings.set_daily_summary(enabled)
+}
+
+#[tauri::command]
+fn set_auto_continue_rate_limit(settings: State<SettingsStore>, enabled: bool) -> Settings {
+    settings.set_auto_continue_rate_limit(enabled)
+}
+
+// --- remote control (evor.dev dashboard) ---
+
+#[tauri::command]
+fn remote_status(app: AppHandle) -> remote::RemoteStatus {
+    remote::status(&app)
+}
+
+/// Save the dashboard URL + enabled flag. A non-empty URL is validated up front
+/// so the user can't enable an unreachable/malformed endpoint silently.
+#[tauri::command]
+fn set_remote_config(
+    app: AppHandle,
+    url: String,
+    enabled: bool,
+) -> Result<remote::RemoteStatus, String> {
+    let url = url.trim().to_string();
+    if !url.is_empty() {
+        remote::validate_url(&url)?;
+    } else if enabled {
+        return Err("enter the dashboard URL first".into());
+    }
+    app.state::<SettingsStore>().set_remote(url, enabled);
+    Ok(remote::status(&app))
+}
+
+/// Store (or clear, with an empty/None token) the device bearer token. The token
+/// is write-only from the UI's perspective — never read back.
+#[tauri::command]
+fn set_remote_token(app: AppHandle, token: Option<String>) -> Result<remote::RemoteStatus, String> {
+    secrets::save_evor_token(token)?;
+    Ok(remote::status(&app))
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn remote_notify(
+    app: AppHandle,
+    agent_id: String,
+    project: String,
+    title: String,
+    question: String,
+    options: Vec<String>,
+    text_mode: bool,
+    kind: String,
+) {
+    remote::notify(app, agent_id, project, title, question, options, text_mode, kind);
+}
+
+#[tauri::command]
+fn remote_resolve(app: AppHandle, agent_id: String) {
+    remote::resolve(app, agent_id);
 }
 
 // --- skills ---
@@ -1577,6 +1788,7 @@ pub fn run() {
         .manage(GitLock::default())
         .manage(JudgeCache::default())
         .manage(PoppedOut::default())
+        .manage(watch::WatchManager::default())
         .setup(|app| {
             let dir = app
                 .path()
@@ -1590,6 +1802,14 @@ pub fn run() {
             // fresh install getting the default-on skills on first launch.
             skills::sync(&settings_store.skills_disabled());
             app.manage(settings_store);
+
+            // Background poller that applies replies made from the hosted
+            // dashboard into the local agent ptys (no-op when remote is off).
+            remote::spawn_poller(app.handle().clone());
+
+            // Watch already-open project roots so the file explorer
+            // auto-refreshes on external filesystem changes.
+            watch::sync(app.handle());
 
             // Native window menu. File: Open Project / New Window / Home / Quit,
             // plus an Edit submenu (predefined items) so macOS shortcuts work.
@@ -1633,6 +1853,11 @@ pub fn run() {
             add_project,
             list_projects,
             remove_project,
+            list_super_projects,
+            create_super_project,
+            rename_super_project,
+            delete_super_project,
+            set_super_project_members,
             list_agents,
             running_agents,
             all_agents,
@@ -1655,6 +1880,7 @@ pub fn run() {
             set_agent_title,
             archive_agent,
             delete_agent,
+            pause_agent,
             list_tasks,
             add_task,
             all_tasks,
@@ -1700,6 +1926,12 @@ pub fn run() {
             run_config,
             run_setup_prompt,
             create_run_config,
+            run_command_once,
+            save_pause_manifest,
+            read_pause_manifest,
+            clear_pause_manifest,
+            paused_projects,
+            detect_running_stacks,
             intent_config,
             set_intent,
             read_intent,
@@ -1711,6 +1943,12 @@ pub fn run() {
             open_window,
             get_settings,
             set_daily_summary,
+            set_auto_continue_rate_limit,
+            remote_status,
+            set_remote_config,
+            set_remote_token,
+            remote_notify,
+            remote_resolve,
             list_skills,
             set_skill_enabled,
             remove_skill,
@@ -1727,4 +1965,35 @@ pub fn run() {
                 app_handle.state::<SessionManager>().kill_all();
             }
         });
+}
+
+/// Serializes tests that mutate process-global env (`HOME`) — `std::env::set_var`
+/// is process-wide, so HOME-dependent tests across modules would otherwise race.
+/// Ignores poisoning so one panicking test doesn't cascade.
+#[cfg(test)]
+pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+
+    /// `confined_cwd` rejects path traversal and absolute escapes, and joins a
+    /// legitimate monorepo subdir under the project root.
+    #[test]
+    fn confined_cwd_blocks_escapes_and_joins_subdir() {
+        let root = "/tmp/proj";
+        // None / empty → the project root itself.
+        assert_eq!(confined_cwd(root, None).unwrap(), root);
+        assert_eq!(confined_cwd(root, Some("  ")).unwrap(), root);
+        // A normal subdir is joined.
+        assert_eq!(confined_cwd(root, Some("apps/web")).unwrap(), "/tmp/proj/apps/web");
+        // `..` traversal is refused.
+        assert!(confined_cwd(root, Some("../etc")).is_err());
+        assert!(confined_cwd(root, Some("apps/../../etc")).is_err());
+        // An absolute path can't replace the root.
+        assert!(confined_cwd(root, Some("/etc")).is_err());
+    }
 }

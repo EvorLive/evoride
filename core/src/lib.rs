@@ -1,5 +1,5 @@
 //! Shared eterm core. Terminal-output hygiene and issue detection used by both
-//! the standalone eterm TUI and the EvorIDE backend, so "the terminal uses
+//! the standalone eterm TUI and the Evor backend, so "the terminal uses
 //! eterm" — including the **fix this issue** feature — from one implementation.
 
 /// Strip ANSI/VT escape sequences, keeping printable text and newlines so
@@ -321,6 +321,153 @@ pub fn fix_prompt(command: &str, exit_code: Option<i32>, output_tail: &str) -> S
     )
 }
 
+/// What a usage / session / rate-limit message tells us: the line Claude
+/// printed, plus the reset moment in whatever form it was printed. Either form
+/// may be empty — the caller resolves what it can to a real instant:
+/// `reset_epoch` (Claude's `|<unix-ts>`) is exact; otherwise `reset_clock`
+/// ("2:20am" / "3pm") interpreted in `reset_tz` (an IANA zone like
+/// "Europe/Berlin", possibly empty → use local) gives the next occurrence.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RateLimitInfo {
+    pub message: String,
+    pub reset_clock: String,
+    pub reset_tz: String,
+    pub reset_epoch: Option<u64>,
+}
+
+/// Phrases Claude uses for a hard stop. Matched case-insensitively and only
+/// when the *same line* also carries a stop signal (`reset`/`reached`/`hit`),
+/// so prose merely mentioning "rate limit" doesn't trigger a false continue.
+const LIMIT_PHRASES: &[&str] = &[
+    "usage limit",
+    "session limit",
+    "rate limit",
+    "weekly limit",
+    "hour limit", // "5-hour limit reached ∙ resets 3pm"
+];
+
+/// Detect a usage/session-limit message at the **bottom** of the output (so it
+/// clears on its own once the agent resumes and prints past it), and extract
+/// when the limit resets. Returns `None` for ordinary output.
+pub fn detect_rate_limit(text: &str) -> Option<RateLimitInfo> {
+    // Only the tail: an old, already-resolved limit that scrolled up must not
+    // keep us "limited" (symmetric with `detect_prompt`).
+    let start = text.len().saturating_sub(1500);
+    let start = (start..=text.len())
+        .find(|&i| text.is_char_boundary(i))
+        .unwrap_or(0);
+    let tail = &text[start..];
+    let lower = tail.to_ascii_lowercase();
+
+    let pos = LIMIT_PHRASES.iter().filter_map(|p| lower.rfind(p)).max()?;
+    let line_start = tail[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = tail[pos..].find('\n').map(|i| pos + i).unwrap_or(tail.len());
+    let line_lower = &lower[line_start..line_end];
+    // Require a stop signal on the line — not just the word "limit".
+    if !(line_lower.contains("reset")
+        || line_lower.contains("reached")
+        || line_lower.contains("hit "))
+    {
+        return None;
+    }
+
+    let message = truncate_label(&clean_line(&tail[line_start..line_end]), 160);
+
+    // Exact epoch form first: `… reached|1718130000`.
+    let reset_epoch = find_epoch_pipe(&lower[pos..line_end]);
+    let (reset_clock, reset_tz) = if reset_epoch.is_some() {
+        (String::new(), String::new())
+    } else if let Some((clock, after)) = find_clock(&lower[line_start..line_end]) {
+        // The IANA zone (if any) sits in parens just after the clock.
+        let tz = find_paren_tz(&tail[line_start + after..line_end]);
+        (clock, tz)
+    } else {
+        (String::new(), String::new())
+    };
+
+    Some(RateLimitInfo {
+        message,
+        reset_clock,
+        reset_tz,
+        reset_epoch,
+    })
+}
+
+/// Exact reset time when Claude prints `…reached|<unix-seconds>`.
+fn find_epoch_pipe(s: &str) -> Option<u64> {
+    let i = s.find('|')?;
+    let digits: String = s[i + 1..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.len() >= 10 {
+        digits.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Find a wall-clock like "3pm", "2:20am", "10:30 pm" in `s` (lowercased).
+/// Returns the normalized clock and the byte index just past the "am"/"pm",
+/// so the caller can look for a trailing "(timezone)".
+fn find_clock(s: &str) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        if b[i].is_ascii_digit() {
+            let start = i;
+            let mut j = i + 1;
+            if j < n && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            let hour: u32 = s[start..j].parse().unwrap_or(0);
+            let mut k = j;
+            let mut mins = String::new();
+            if k + 2 < n && b[k] == b':' && b[k + 1].is_ascii_digit() && b[k + 2].is_ascii_digit()
+            {
+                mins = s[k..k + 3].to_string();
+                k += 3;
+            }
+            let mut m = k;
+            while m < n && b[m] == b' ' {
+                m += 1;
+            }
+            if m + 1 < n
+                && (b[m] == b'a' || b[m] == b'p')
+                && b[m + 1] == b'm'
+                && (1..=12).contains(&hour)
+            {
+                return Some((format!("{hour}{mins}{}", &s[m..m + 2]), m + 2));
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Pull an IANA zone ("Europe/Berlin") or short abbreviation ("CST") out of the
+/// first `(...)` in `s`. Empty when there isn't a plausible zone.
+fn find_paren_tz(s: &str) -> String {
+    let Some(o) = s.find('(') else {
+        return String::new();
+    };
+    let Some(c) = s[o + 1..].find(')') else {
+        return String::new();
+    };
+    let inside = s[o + 1..o + 1 + c].trim();
+    let looks_zone = inside.contains('/')
+        || ((2..=6).contains(&inside.len()) && inside.chars().all(|ch| ch.is_ascii_alphabetic()));
+    if looks_zone {
+        inside.to_string()
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +576,50 @@ mod tests {
         // or every idle agent shows "needs you" forever.
         assert!(detect_prompt("\n╭─────────────╮\n│ > try \"fix the bug\"      │\n╰─────────────╯\n❯ \n").is_none());
         assert!(detect_prompt("user@host project % ").is_none());
+    }
+
+    #[test]
+    fn rate_limit_session_form_with_iana_zone() {
+        // The real interactive message (Claude Code) — pasted from a session.
+        let out = "✻ Churned for 6m 27s\nYou've hit your session limit · resets 2:20am (Europe/Berlin)\n";
+        let rl = detect_rate_limit(out).expect("should detect the session limit");
+        assert_eq!(rl.reset_clock, "2:20am");
+        assert_eq!(rl.reset_tz, "Europe/Berlin");
+        assert_eq!(rl.reset_epoch, None);
+        assert!(rl.message.contains("session limit"));
+    }
+
+    #[test]
+    fn rate_limit_usage_form_reset_at() {
+        let out = "Claude usage limit reached. Your limit will reset at 3pm (America/Los_Angeles).\n";
+        let rl = detect_rate_limit(out).unwrap();
+        assert_eq!(rl.reset_clock, "3pm");
+        assert_eq!(rl.reset_tz, "America/Los_Angeles");
+    }
+
+    #[test]
+    fn rate_limit_epoch_pipe_form() {
+        let rl = detect_rate_limit("Claude AI usage limit reached|1718130000\n").unwrap();
+        assert_eq!(rl.reset_epoch, Some(1718130000));
+        assert!(rl.reset_clock.is_empty());
+    }
+
+    #[test]
+    fn rate_limit_clears_once_scrolled_up() {
+        // The limit message lingers in the append-only buffer but the agent has
+        // since resumed and printed work — must no longer report "limited".
+        let mut filler = String::from("You've hit your session limit · resets 2:20am (Europe/Berlin)\n");
+        for i in 0..200 {
+            filler.push_str(&format!("Editing src/file_{i}.rs ... done\n"));
+        }
+        assert!(detect_rate_limit(&filler).is_none());
+    }
+
+    #[test]
+    fn prose_mentioning_rate_limit_is_not_a_stop() {
+        // Discussing the concept must not trigger an auto-continue.
+        assert!(detect_rate_limit("We should add a rate limit to the API endpoint.\n").is_none());
+        assert!(detect_rate_limit("The usage limit feature is documented here.\n").is_none());
     }
 
     #[test]

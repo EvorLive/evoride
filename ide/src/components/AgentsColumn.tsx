@@ -17,6 +17,7 @@ export default function AgentsColumn({
   archived,
   live,
   waiting,
+  rateLimited,
   states,
   clis,
   activeAgentId,
@@ -41,6 +42,9 @@ export default function AgentsColumn({
   live: Set<string>;
   /** Agent ids currently blocking on user input. */
   waiting: Set<string>;
+  /** Agents blocked on a usage/session limit → message + reset epoch-ms (null
+   * when the reset time couldn't be parsed). */
+  rateLimited: Record<string, { message: string; resetAt: number | null }>;
   /** Helper-judge classification per agent (working/passive/active). */
   states: Record<string, "working" | "passive" | "active">;
   /** Enabled, configured launchable agents. */
@@ -120,8 +124,13 @@ export default function AgentsColumn({
         {liveAgents.map((a) => {
           const isLive = true;
           const isWaiting = waiting.has(a.id);
-          const isPassive = !isWaiting && states[a.id] === "passive";
-          const isWorking = !isWaiting && !isPassive;
+          const rl = rateLimited[a.id];
+          const isPassive = !isWaiting && !rl && states[a.id] === "passive";
+          const isWorking = !isWaiting && !rl && !isPassive;
+          const resumeAt =
+            rl?.resetAt != null
+              ? new Date(rl.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              : null;
           return (
             <li key={a.id}>
               <div
@@ -151,6 +160,17 @@ export default function AgentsColumn({
                     {isWaiting && (
                       <span className="agent-wait-pill" title="Actively waiting — needs your input">
                         needs you
+                      </span>
+                    )}
+                    {rl && (
+                      <span
+                        className="agent-rl-pill"
+                        title={
+                          rl.message +
+                          (resumeAt ? ` — auto-continues ~${resumeAt}` : " — reset time unknown")
+                        }
+                      >
+                        {resumeAt ? `rate-limited · resumes ${resumeAt}` : "rate-limited"}
                       </span>
                     )}
                     {isWorking && (

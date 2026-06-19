@@ -56,7 +56,7 @@ export default function StatusBar({
   return (
     <footer className="statusbar">
       <div className="status-left">
-        <span className="status-ver">EvorIDE{version ? ` v${version}` : ""}</span>
+        <span className="status-ver">Evor{version ? ` v${version}` : ""}</span>
         {git?.is_repo ? (
           <>
             <span className="status-branch-wrap">
