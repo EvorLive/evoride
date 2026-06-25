@@ -5538,6 +5538,18 @@ body {
     max-width: 100% !important;
     height: 100%;
   }
+  /* Content panes (e.g. Home) scroll the whole page: the pane is the scroller
+     and its child grows to its natural height instead of being locked to the
+     viewport (which clipped tall content — the "can't scroll" bug). */
+  .mob-pane-scroll {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+  .mob-pane-scroll > * {
+    height: auto !important;
+    min-height: 100%;
+  }
   .mob-empty {
     display: flex;
     flex-direction: column;
@@ -5616,6 +5628,308 @@ body {
     font-size: 15px;
     line-height: 1;
     font-family: var(--font-geist-mono, monospace);
+  }
+
+  /* ---- Mobile Home tab (MobileHome.tsx) — thumb-first glance ---- */
+  .mhome {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 14px 14px calc(24px + env(safe-area-inset-bottom, 0));
+  }
+  .mhome-head h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .mhome-sub {
+    margin: 2px 0 0;
+    color: var(--fg-muted);
+    font-size: 13px;
+  }
+  .mhome-sec {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .mhome-h2 {
+    margin: 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+  }
+  .mhome-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  /* Needs-you cards — the urgent block. */
+  .mhome-needs .mhome-need {
+    border: 1px solid var(--brand);
+    border-radius: 12px;
+    padding: 12px;
+    background: color-mix(in srgb, var(--brand) 8%, var(--surface));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .mhome-need-title {
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--fg);
+    font-size: 15px;
+    font-weight: 600;
+    padding: 0;
+  }
+  .mhome-q {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: 14px;
+    font-style: italic;
+  }
+  .mhome-yn,
+  .mhome-choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .mhome-yn .btn,
+  .mhome-yn .btn-ghost,
+  .mhome-choice {
+    flex: 1 1 auto;
+    min-height: 44px;
+    min-width: 72px;
+    font-size: 15px;
+  }
+  .mhome-choice-n {
+    opacity: 0.6;
+    margin-right: 6px;
+  }
+  .mhome-clear {
+    color: var(--fg-muted);
+    font-size: 14px;
+    padding: 10px 12px;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+  }
+  /* Ask box. */
+  .mhome-ask {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .mhome-ask textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-2);
+    color: var(--fg);
+    font: inherit;
+    font-size: 16px; /* ≥16px stops iOS Safari auto-zoom */
+    resize: vertical;
+  }
+  .mhome-ask .btn {
+    align-self: flex-end;
+    min-height: 44px;
+  }
+  /* Running rows. */
+  .mhome-run {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .mhome-dot-live {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ok, #3fb950);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok, #3fb950) 25%, transparent);
+  }
+  .mhome-run-title {
+    flex: 1;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--fg);
+    font-size: 15px;
+    padding: 6px 0;
+  }
+  /* Task rows — one-tap handoff. */
+  .mhome-task {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+  }
+  .mhome-task-dot {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    font-size: 18px;
+    line-height: 1;
+    padding: 4px;
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  .mhome-task-dot.doing {
+    color: var(--brand);
+  }
+  .mhome-task-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+  }
+  .mhome-task-go {
+    flex: 0 0 auto;
+    min-height: 40px;
+  }
+  .mhome-empty {
+    color: var(--fg-muted);
+    font-size: 14px;
+    margin: 0;
+  }
+
+  /* ---- Mobile home shell (cross-project) super-project chips row ---- */
+  .mob-superbar {
+    flex: 0 0 auto;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  /* ---- Mobile Agents tab (MobileAgents.tsx) — grouped by project ---- */
+  .magents {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    padding: 14px 14px calc(24px + env(safe-area-inset-bottom, 0));
+  }
+  .magents-sec {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .magents-groups,
+  .magents-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .magents-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .magents-group {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .magents-ghead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .magents-gname {
+    font-weight: 600;
+    font-size: 14px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .magents-gcount {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 8px;
+    line-height: 18px;
+  }
+  .magents-gnew {
+    margin-left: auto;
+    flex: 0 0 auto;
+    min-height: 36px;
+  }
+  .magents-rows {
+    display: flex;
+    flex-direction: column;
+  }
+  .magents-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+  }
+  .magents-row:first-child {
+    border-top: none;
+  }
+  .magents-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .magents-dot.live {
+    background: var(--ok, #3fb950);
+  }
+  .magents-dot.wait {
+    background: var(--brand);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 25%, transparent);
+  }
+  .magents-atitle {
+    flex: 1;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--fg);
+    font-size: 15px;
+    padding: 4px 0;
+    min-width: 0;
+  }
+  .magents-badge {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--brand);
+    border: 1px solid var(--brand);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  .magents-pick {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-2);
+    color: var(--fg);
+    font-size: 16px;
+  }
+  .magents-clis {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .magents-clis .btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+    min-width: 80px;
   }
 }
 

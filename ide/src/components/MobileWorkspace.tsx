@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /** Mobile tabs, in bottom-nav order. */
-export type MobileTab = "agents" | "terminal" | "changes" | "tasks";
+export type MobileTab = "home" | "agents" | "terminal" | "changes" | "tasks";
 
 interface Props {
   projectName: string;
@@ -11,8 +11,9 @@ interface Props {
   hasTerminal: boolean;
   tab: MobileTab;
   setTab: (t: MobileTab) => void;
-  /** Project rail (drawer) + the four tab bodies — built by App with full state. */
+  /** Project rail (drawer) + the tab bodies — built by App with full state. */
   projectRail: ReactNode;
+  home: ReactNode;
   agentsColumn: ReactNode;
   terminal: ReactNode;
   changes: ReactNode;
@@ -41,6 +42,7 @@ export default function MobileWorkspace({
   tab,
   setTab,
   projectRail,
+  home,
   agentsColumn,
   terminal,
   changes,
@@ -93,6 +95,7 @@ export default function MobileWorkspace({
   };
 
   const TABS: { id: MobileTab; label: string; icon: string }[] = [
+    { id: "home", label: "Home", icon: "⌂" },
     { id: "agents", label: "Agents", icon: "▦" },
     { id: "terminal", label: "Terminal", icon: ">_" },
     { id: "changes", label: "Changes", icon: "±" },
@@ -124,6 +127,9 @@ export default function MobileWorkspace({
       </header>
 
       <main className="mob-body">
+        <section className={`mob-pane mob-pane-scroll ${tab === "home" ? "on" : ""}`}>
+          {home}
+        </section>
         <section className={`mob-pane ${tab === "agents" ? "on" : ""}`}>
           {agentsColumn}
         </section>
@@ -157,6 +163,11 @@ export default function MobileWorkspace({
       {tab === "terminal" && hasTerminal && (
         <form className="mob-cmd" onSubmit={submitCmd}>
           <div className="mob-keys">
+            <button type="button" onClick={() => send("\x1b[A")} title="Up">↑</button>
+            <button type="button" onClick={() => send("\x1b[B")} title="Down">↓</button>
+            <button type="button" onClick={() => send("\x1b[D")} title="Left">←</button>
+            <button type="button" onClick={() => send("\x1b[C")} title="Right">→</button>
+            <button type="button" onClick={() => send("\t")} title="Tab">⇥</button>
             <button type="button" onClick={() => send("\r")} title="Enter">⏎</button>
             <button type="button" onClick={() => send("\x1b")} title="Escape">esc</button>
             <button type="button" onClick={() => send("\x03")} title="Ctrl-C">^C</button>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isTauri } from "../lib/bridge";
 import type { Project, SuperProject } from "../lib/tauri";
 
 function GridIcon() {
@@ -321,9 +322,13 @@ export default function ProjectRail({
             + New group
           </button>
         )}
-        <button className="prail-add" onClick={onOpen} title="Open another project">
-          + Open
-        </button>
+        {/* Opening a new project is desktop-only — the daemon rejects add_project
+            (it would widen path confinement). Hide it on the remote/web client. */}
+        {isTauri() && (
+          <button className="prail-add" onClick={onOpen} title="Open another project">
+            + Open
+          </button>
+        )}
       </div>
 
       <div

@@ -32,13 +32,7 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::{broadcast, oneshot};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::GitLock;
-use crate::event::{Sink, TauriSink};
 use crate::serve;
-use crate::session::SessionManager;
-use crate::settings::SettingsStore;
-use crate::store::Store;
-use crate::watch::WatchManager;
 
 /// Managed state: the running server (if any).
 #[derive(Default)]
@@ -198,7 +192,8 @@ async fn rpc(
     if !authed(&headers, &st.token) {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" }))).into_response();
     }
-    let res = tokio::task::spawn_blocking(move || run_cmd(&st.app, &req.cmd, &req.args)).await;
+    let res =
+        tokio::task::spawn_blocking(move || crate::dispatch_app(&st.app, &req.cmd, &req.args)).await;
     match res {
         Ok(Ok(v)) => (StatusCode::OK, Json(json!({ "ok": true, "data": v }))).into_response(),
         Ok(Err(m)) => (StatusCode::OK, Json(json!({ "ok": false, "error": m }))).into_response(),
@@ -208,27 +203,6 @@ async fn rpc(
         )
             .into_response(),
     }
-}
-
-/// Build a `serve::Ctx` from the Tauri app's managed state and dispatch. The sink
-/// is a `TauriSink` so a phone-initiated agent also appears on the desktop (and
-/// tees back to other phones).
-fn run_cmd(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, String> {
-    let store = app.state::<Store>();
-    let settings = app.state::<SettingsStore>();
-    let sessions = app.state::<SessionManager>();
-    let git = app.state::<GitLock>();
-    let watch_mgr = app.state::<WatchManager>();
-    let sink: Sink = Arc::new(TauriSink(app.clone()));
-    let ctx = serve::Ctx {
-        store: store.inner(),
-        settings: settings.inner(),
-        sessions: sessions.inner(),
-        git_lock: &git.inner().0,
-        watch_mgr: watch_mgr.inner(),
-        sink: &sink,
-    };
-    serve::dispatch(&ctx, cmd, args)
 }
 
 async fn events(
@@ -269,7 +243,7 @@ fn authed(headers: &HeaderMap, token: &str) -> bool {
 
 // --- helpers ---
 
-fn qr_svg(link: &str) -> String {
+pub(crate) fn qr_svg(link: &str) -> String {
     use qrcode::QrCode;
     use qrcode::render::svg;
     match QrCode::new(link.as_bytes()) {

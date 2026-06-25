@@ -2,6 +2,9 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import ProjectRail from "./components/ProjectRail";
 import AgentsColumn from "./components/AgentsColumn";
 import MobileWorkspace, { type MobileTab } from "./components/MobileWorkspace";
+import MobileHome from "./components/MobileHome";
+import MobileHomeShell, { type HomeTab } from "./components/MobileHomeShell";
+import MobileAgents from "./components/MobileAgents";
 import { useIsMobile } from "./lib/useIsMobile";
 import ProjectHome from "./components/ProjectHome";
 import JiraProjectPicker from "./components/JiraProjectPicker";
@@ -29,7 +32,7 @@ const FileExplorer = lazy(() => import("./components/FileExplorer"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
 const TasksPanel = lazy(() => import("./components/TasksPanel"));
 const EditsPanel = lazy(() => import("./components/EditsPanel"));
-import { getCurrentWindow, listen, openUrl } from "./lib/bridge";
+import { getCurrentWindow, isTauri, listen, openUrl } from "./lib/bridge";
 import { midTruncate } from "./lib/util";
 import * as api from "./lib/tauri";
 import type {
@@ -98,7 +101,8 @@ export default function App() {
   // Phone layout: which bottom-nav tab is showing. Defaults to the terminal so
   // you land on the active worker.
   const isMobile = useIsMobile();
-  const [mobileTab, setMobileTab] = useState<MobileTab>("terminal");
+  const [mobileTab, setMobileTab] = useState<MobileTab>("home");
+  const [homeTab, setHomeTab] = useState<HomeTab>("home");
   // Center shows the agent terminal or the file editor (never side by side).
   const [centerMode, setCenterMode] = useState<"terminal" | "editor">("terminal");
   const [services, setServices] = useState<Service[]>([]);
@@ -594,8 +598,13 @@ export default function App() {
   const removeTile = (id: string) =>
     setActiveTiles((prev) => prev.filter((x) => x !== id));
 
+  // Opening a NEW project (registering an arbitrary host path) is desktop-only:
+  // on the daemon-served client it would widen the path-confinement boundary, and
+  // the server rejects `add_project` outright (see evor-daemon REMOTE_DENIED). So
+  // refuse it here too rather than show a prompt that will fail.
   const openFolder = async () => {
     setMenuOpen(false);
+    if (!isTauri()) return;
     const path = await api.pickFolder();
     if (!path) return;
     const p = await api.addProject(path);
@@ -609,6 +618,20 @@ export default function App() {
   const openProjectFromHome = (p: Project) => {
     setProject(p);
     setView("workspace");
+  };
+  // Spawn a fresh agent in a specific project (from the cross-project Agents view)
+  // and jump straight into its terminal.
+  const newAgentInProject = async (p: Project, label: string, command: string) => {
+    setProject(p);
+    setView("workspace");
+    setMobileTab("terminal");
+    try {
+      const rec = await api.spawnAgent({ projectId: p.id, title: label, command: command || undefined });
+      addLive(rec.id);
+      setActiveAgentId(rec.id);
+    } catch {
+      /* spawn failed (e.g. bad CLI) — stay in the project so the user can retry */
+    }
   };
   // Jump straight to a specific (running) agent in its project.
   const openAgentFromHome = (agent: AgentRecord) => {
@@ -1869,8 +1892,9 @@ export default function App() {
       cmds.push({ id: "new-codex", label: "New Codex", hint: "Agent", run: () => newAgent("Codex", "codex") });
     }
 
-    // Project + window (always).
-    cmds.push({ id: "open-project", label: "Open project…", hint: "Project", run: () => void openFolder() });
+    // Project + window. Opening a project is desktop-only (the daemon rejects it).
+    if (isTauri())
+      cmds.push({ id: "open-project", label: "Open project…", hint: "Project", run: () => void openFolder() });
     cmds.push({ id: "new-window", label: "New window", hint: "Window", run: () => api.openWindow() });
     if (switchableAgents.length > 0)
       cmds.push({ id: "switch-agent", label: "Switch agent…", hint: "⌘⇧E", run: () => setSwitcherOpen(true) });
@@ -2003,9 +2027,11 @@ export default function App() {
               </li>
             </ol>
             <div className="welcome-actions">
-              <button className="btn primary" onClick={openFolder}>
-                Open a project
-              </button>
+              {isTauri() && (
+                <button className="btn primary" onClick={openFolder}>
+                  Open a project
+                </button>
+              )}
               <span className="welcome-tip">Tip: press ⌘P anytime to jump around.</span>
             </div>
           </div>
@@ -2029,6 +2055,92 @@ export default function App() {
   const homeTasks = activeSuper
     ? allTasksList.filter((t) => homeProjectIds.has(t.project_id))
     : allTasksList;
+
+  // Built once, shared by the desktop home and the mobile home shell.
+  const superBarEl = (
+    <SuperProjectBar
+      superProjects={superProjects}
+      projects={knownProjects}
+      activeId={activeSuperId}
+      onSelect={setActiveSuperId}
+      onCreate={(name) =>
+        api.createSuperProject(name).then((sp) => {
+          setSuperProjects((prev) => [...prev, sp]);
+          setActiveSuperId(sp.id);
+          refreshSuperProjects();
+        }).catch(() => {})
+      }
+      onRename={(id, name) =>
+        void api.renameSuperProject(id, name).then(refreshSuperProjects).catch(() => {})
+      }
+      onDelete={(id) =>
+        void api.deleteSuperProject(id).then(refreshSuperProjects).catch(() => {})
+      }
+      onSetMembers={(id, ids) =>
+        void api.setSuperProjectMembers(id, ids).then(refreshSuperProjects).catch(() => {})
+      }
+    />
+  );
+  const homeViewEl = (
+    <HomeView
+      projects={homeProjects}
+      runningList={homeRunningList}
+      waitingAgents={waitingAgents}
+      waitingOptions={waitingOptions}
+      waitingQuestion={waitingQuestion}
+      textModes={waitingTextMode}
+      tasks={homeTasks}
+      clis={enabledAgentClis}
+      canPlan={hasJudge}
+      onOpenProject={openProjectFromHome}
+      onOpenAgent={openAgentFromHome}
+      onAccept={acceptAgent}
+      onYes={yesAgent}
+      onNo={noAgent}
+      onPick={pickOption}
+      onAddTask={addTaskGlobal}
+      onCycleTask={(t) => void cycleTaskGlobal(t)}
+      onDeleteTask={(id) => void delTaskGlobal(id)}
+      onAssignTask={(id, pid) => void assignTaskGlobal(id, pid)}
+      onSetDescription={setTaskDesc}
+      onBreakdown={breakdownTaskH}
+      onToggleStep={toggleStepH}
+      onWorkTask={(t, c) => workTaskAnywhere(t, c, false)}
+      onBrainstormTask={(t, c) => workTaskAnywhere(t, c, true)}
+      onPlan={planTasksGlobal}
+      onOpenJira={() => openSettings("jira")}
+      onTasksRefresh={refreshAllTasks}
+      onPushJira={(t) => void pushTaskToJira(t)}
+    />
+  );
+
+  // Mobile cross-project home: a bottom-nav shell (Home / Agents) mirroring the
+  // project workspace, so navigation feels the same before and after you pick a
+  // project. Agents are grouped per project with a one-tap launcher.
+  if (view === "home" && isMobile) {
+    return (
+      <div className="ide">
+        <MobileHomeShell
+          tab={homeTab}
+          setTab={setHomeTab}
+          superBar={superBarEl}
+          home={homeViewEl}
+          agents={
+            <MobileAgents
+              projects={homeProjects}
+              running={homeRunningList}
+              waitingAgents={waitingAgents}
+              clis={enabledAgentClis}
+              onOpenAgent={openAgentFromHome}
+              onNewAgent={(p, label, command) => void newAgentInProject(p, label, command)}
+            />
+          }
+        />
+        {jiraPicker}
+        {palette}
+      </div>
+    );
+  }
 
   // Cross-project Home dashboard.
   if (view === "home") {
@@ -2055,61 +2167,8 @@ export default function App() {
           {/* Brand header — only shows on mobile, where the rail (which carries
               the “Evor” mark on desktop) is hidden. */}
           <div className="mob-brandbar">Evor</div>
-          <SuperProjectBar
-            superProjects={superProjects}
-            projects={knownProjects}
-            activeId={activeSuperId}
-            onSelect={setActiveSuperId}
-            onCreate={(name) =>
-              api.createSuperProject(name).then((sp) => {
-                // Add optimistically so the just-created group can be selected
-                // before the async refresh lands (else the stale-filter guard
-                // would clear the selection).
-                setSuperProjects((prev) => [...prev, sp]);
-                setActiveSuperId(sp.id);
-                refreshSuperProjects();
-              }).catch(() => {})
-            }
-            onRename={(id, name) =>
-              void api.renameSuperProject(id, name).then(refreshSuperProjects).catch(() => {})
-            }
-            onDelete={(id) =>
-              void api.deleteSuperProject(id).then(refreshSuperProjects).catch(() => {})
-            }
-            onSetMembers={(id, ids) =>
-              void api.setSuperProjectMembers(id, ids).then(refreshSuperProjects).catch(() => {})
-            }
-          />
-          <HomeView
-            projects={homeProjects}
-            runningList={homeRunningList}
-            waitingAgents={waitingAgents}
-            waitingOptions={waitingOptions}
-            waitingQuestion={waitingQuestion}
-            textModes={waitingTextMode}
-            tasks={homeTasks}
-            clis={enabledAgentClis}
-            canPlan={hasJudge}
-            onOpenProject={openProjectFromHome}
-            onOpenAgent={openAgentFromHome}
-            onAccept={acceptAgent}
-            onYes={yesAgent}
-            onNo={noAgent}
-            onPick={pickOption}
-            onAddTask={addTaskGlobal}
-            onCycleTask={(t) => void cycleTaskGlobal(t)}
-            onDeleteTask={(id) => void delTaskGlobal(id)}
-            onAssignTask={(id, pid) => void assignTaskGlobal(id, pid)}
-            onSetDescription={setTaskDesc}
-            onBreakdown={breakdownTaskH}
-            onToggleStep={toggleStepH}
-            onWorkTask={(t, c) => workTaskAnywhere(t, c, false)}
-            onBrainstormTask={(t, c) => workTaskAnywhere(t, c, true)}
-            onPlan={planTasksGlobal}
-            onOpenJira={() => openSettings("jira")}
-            onTasksRefresh={refreshAllTasks}
-            onPushJira={(t) => void pushTaskToJira(t)}
-          />
+          {superBarEl}
+          {homeViewEl}
           </div>
         </div>
         {jiraPicker}
@@ -2228,6 +2287,46 @@ export default function App() {
             hasTerminal={!!(activeIsLive && activeAgentId)}
             tab={mobileTab}
             setTab={setMobileTab}
+            home={
+              <MobileHome
+                projectName={project.name}
+                agents={activeAgents}
+                live={live}
+                waitingAgents={waitingAgents}
+                waitingOptions={waitingOptions}
+                waitingQuestion={waitingQuestion}
+                textModes={waitingTextMode}
+                tasks={tasks}
+                agentCommand={enabledAgentClis.find((c) => c.command.trim())?.command}
+                agentLabel={enabledAgentClis.find((c) => c.command.trim())?.label}
+                onAccept={acceptAgent}
+                onYes={yesAgent}
+                onNo={noAgent}
+                onPick={pickOption}
+                onOpenAgent={(id) => {
+                  setCenterMode("terminal");
+                  setLiveIssue(null);
+                  setMobileTab("terminal");
+                  if (!live.has(id)) {
+                    void resumeExisting(id);
+                  } else {
+                    setDiffView(null);
+                    setActiveAgentId(id);
+                  }
+                }}
+                onWork={(t, command) => void workOnTask(t, command)}
+                onCycle={cycleTask}
+                onAsk={(prompt) => {
+                  const cli = enabledAgentClis.find((c) => c.command.trim());
+                  setMobileTab("terminal");
+                  void startAgentWithPrompt(
+                    prompt.length > 40 ? prompt.slice(0, 40) + "…" : prompt,
+                    cli?.command ?? "",
+                    prompt,
+                  );
+                }}
+              />
+            }
             onSend={(raw) => {
               if (activeAgentId) {
                 void api.writeInput(activeAgentId, raw);

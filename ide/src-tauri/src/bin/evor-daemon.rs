@@ -197,6 +197,23 @@ struct RpcReq {
     args: Value,
 }
 
+/// Commands a *remote* client must never invoke, regardless of viewport or UI.
+/// The browser is less trusted than the desktop app (its calls crossed a LAN), so
+/// risky project-management actions are refused server-side — hiding the buttons
+/// in the UI is not enough. The standout is `add_project`: it registers an
+/// arbitrary filesystem path as a project root, which `guard::confine` then treats
+/// as allowed — i.e. it can *widen* the confinement boundary that protects every
+/// other path command. Opening a new project therefore happens only at the
+/// desktop, where the OS folder picker is the gate. (See CLAUDE.md guardrail #1.)
+const REMOTE_DENIED: &[&str] = &[
+    "add_project",            // "open new project" — would escape path confinement
+    "remove_project",         // destructive: drops a project + its agents/tasks
+    "create_super_project",
+    "rename_super_project",
+    "delete_super_project",
+    "set_super_project_members",
+];
+
 /// One endpoint for the whole command surface: `{cmd, args}` → result. Mirrors
 /// the desktop `invoke()` contract so the frontend bridge is a thin swap.
 async fn rpc(
@@ -206,6 +223,13 @@ async fn rpc(
 ) -> impl IntoResponse {
     if !authed(&headers, &st.token) {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" }))).into_response();
+    }
+    if REMOTE_DENIED.contains(&req.cmd.as_str()) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "ok": false, "error": "this action is only available on the desktop app" })),
+        )
+            .into_response();
     }
     // Commands are blocking (sqlite, git, pty, fs) — run off the async executor.
     let res = tokio::task::spawn_blocking(move || {

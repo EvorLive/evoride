@@ -485,6 +485,24 @@ export const mobileStatus = () => invoke<MobileStatus>("mobile_status");
 export const mobileStart = (port?: number) =>
   invoke<MobileStatus>("mobile_start", { port });
 export const mobileStop = () => invoke<MobileStatus>("mobile_stop");
+
+// --- cloud access (reach this IDE from anywhere via evor.dev, E2E) ---
+export interface CloudStatus {
+  running: boolean;
+  url: string;
+}
+export interface CloudPairing {
+  /** Link to open on the phone (carries the device id + E2E key in #cloud=). */
+  url: string;
+  device: string;
+  qr_svg: string;
+}
+export const cloudStatus = () => invoke<CloudStatus>("cloud_status");
+/** Dial out to the evor.dev relay (uses the Settings → Remote device token). */
+export const cloudStart = () => invoke<CloudStatus>("cloud_start");
+export const cloudStop = () => invoke<CloudStatus>("cloud_stop");
+/** Pairing QR/link (device id + E2E key) to scan on the phone. */
+export const cloudPairing = () => invoke<CloudPairing>("cloud_pairing");
 /** Fires when a reply made from the dashboard is applied to a local agent. */
 export async function onRemoteReply(
   cb: (agentId: string) => void,

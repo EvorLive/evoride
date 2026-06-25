@@ -8,6 +8,7 @@
 // implementation is a security invariant: the confine/trust gates must not drift
 // between the desktop app and the daemon.
 pub mod claude;
+pub mod cloud;
 pub mod edits;
 pub mod event;
 pub mod fs;
@@ -16,6 +17,7 @@ pub mod guard;
 pub mod intent;
 pub mod jira;
 pub mod judge;
+pub mod localrpc;
 pub mod mobile;
 pub mod pause;
 pub mod proctree;
@@ -160,6 +162,59 @@ fn close_popout(app: AppHandle, id: String) {
 }
 
 // --- projects ---
+
+/// Run a command against the desktop's LIVE managed state, with a `TauriSink` so
+/// events tee to the webview + any connected mobile/cloud listeners. Shared by
+/// the embedded mobile server (`mobile.rs`) and the cloud link (`cloud.rs`).
+pub fn dispatch_app(
+    app: &AppHandle,
+    cmd: &str,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let store = app.state::<Store>();
+    let settings = app.state::<SettingsStore>();
+    let sessions = app.state::<SessionManager>();
+    let git = app.state::<GitLock>();
+    let watch_mgr = app.state::<watch::WatchManager>();
+    let sink: event::Sink = Arc::new(event::TauriSink(app.clone()));
+    let ctx = serve::Ctx {
+        store: store.inner(),
+        settings: settings.inner(),
+        sessions: sessions.inner(),
+        git_lock: &git.inner().0,
+        watch_mgr: watch_mgr.inner(),
+        sink: &sink,
+    };
+    serve::dispatch(&ctx, cmd, args)
+}
+
+/// Prepend the directory holding the bundled `evor` CLI to this process's PATH so
+/// it resolves inside every spawned pty (children inherit our env). Checks the dir
+/// next to the running binary (dev: `target/<profile>`; packaged: the app's MacOS
+/// dir) and the Tauri resource dir. Best-effort: if no `evor` is found, PATH is
+/// left untouched and the agent falls back to the documented `echo` channel.
+fn inject_evor_on_path(app: &AppHandle) {
+    let exe_name = if cfg!(windows) { "evor.exe" } else { "evor" };
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            dirs.push(d.to_path_buf());
+        }
+    }
+    if let Ok(rd) = app.path().resource_dir() {
+        dirs.push(rd);
+    }
+    dirs.retain(|d| d.join(exe_name).is_file());
+    if dirs.is_empty() {
+        return;
+    }
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = dirs;
+    paths.extend(std::env::split_paths(&existing));
+    if let Ok(joined) = std::env::join_paths(paths) {
+        std::env::set_var("PATH", joined);
+    }
+}
 
 /// Reconcile the file watchers with the open projects, emitting `fs-changed`
 /// through the Tauri webview. Thin adapter so the `watch` module stays
@@ -725,16 +780,23 @@ pub fn write_project_tasks(store: &Store, project_root: &str, project_id: &str, 
 /// Returns every task touched this round so the UI can upsert (add or update).
 #[tauri::command]
 fn ingest_agent_tasks(store: State<Store>, project: String, agent_id: String) -> Vec<Task> {
-    let (updates, cursor) = tasktrack::read_updates_since(&project, &agent_id);
+    apply_agent_tasks(&store, &project, &agent_id)
+}
+
+/// Core of [`ingest_agent_tasks`], callable off the Tauri command surface (e.g.
+/// the loopback RPC the `evor` CLI flushes through — see `localrpc.rs`). `project`
+/// is the project ROOT path (where `.evoride/agents/<id>/tasks.jsonl` lives).
+pub(crate) fn apply_agent_tasks(store: &Store, project: &str, agent_id: &str) -> Vec<Task> {
+    let (updates, cursor) = tasktrack::read_updates_since(project, agent_id);
     if updates.is_empty() {
         // Still advance the cursor past any malformed/empty trailing lines.
-        tasktrack::write_cursor(&project, &agent_id, cursor);
+        tasktrack::write_cursor(project, agent_id, cursor);
         return Vec::new();
     }
 
     // The agent's project (for new-task creates), and existing titles → id so a
     // `new_task` never duplicates a task that already exists (created or re-runs).
-    let project_id = store.get_agent(&agent_id).map(|a| a.project_id);
+    let project_id = store.get_agent(agent_id).map(|a| a.project_id);
     let mut by_title: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Some(pid) = &project_id {
         for t in store.list_tasks(pid) {
@@ -743,7 +805,7 @@ fn ingest_agent_tasks(store: State<Store>, project: String, agent_id: String) ->
     }
 
     // Current task we're reporting against — starts at the agent's linked task.
-    let mut current: Option<String> = store.task_for_agent(&agent_id).map(|t| t.id);
+    let mut current: Option<String> = store.task_for_agent(agent_id).map(|t| t.id);
     let day = summary::today();
     let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -753,7 +815,7 @@ fn ingest_agent_tasks(store: State<Store>, project: String, agent_id: String) ->
             let key = title.to_lowercase();
             let id = if let Some(existing) = by_title.get(&key) {
                 let id = existing.clone();
-                store.set_task_agent(&id, &agent_id); // round-trip status to this agent
+                store.set_task_agent(&id, agent_id); // round-trip status to this agent
                 id
             } else if let Some(pid) = &project_id {
                 let desc = u
@@ -763,7 +825,7 @@ fn ingest_agent_tasks(store: State<Store>, project: String, agent_id: String) ->
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
-                let t = store.add_task(pid, title, Some(agent_id.clone()), Some(day.clone()), desc);
+                let t = store.add_task(pid, title, Some(agent_id.to_string()), Some(day.clone()), desc);
                 store.update_task(&t.id, "doing"); // starting on it now
                 by_title.insert(key, t.id.clone());
                 t.id
@@ -813,7 +875,7 @@ fn ingest_agent_tasks(store: State<Store>, project: String, agent_id: String) ->
     }
 
     // Consume the lines we just applied so the next poll starts after them.
-    tasktrack::write_cursor(&project, &agent_id, cursor);
+    tasktrack::write_cursor(project, agent_id, cursor);
 
     // Mirror status back to Jira for any touched Jira ticket (fire-and-forget).
     for id in &touched {
@@ -1636,6 +1698,32 @@ fn mobile_stop(state: State<mobile::MobileState>) -> mobile::MobileStatus {
     state.stop()
 }
 
+// --- evor.dev cloud link (reach this IDE from anywhere) ---
+
+#[tauri::command]
+fn cloud_status(state: State<cloud::CloudState>) -> cloud::CloudStatus {
+    state.status()
+}
+
+#[tauri::command]
+fn cloud_start(
+    app: AppHandle,
+    state: State<cloud::CloudState>,
+) -> Result<cloud::CloudStatus, String> {
+    state.start(&app)
+}
+
+#[tauri::command]
+fn cloud_stop(state: State<cloud::CloudState>) -> cloud::CloudStatus {
+    state.stop()
+}
+
+/// Pairing QR/link for connecting a phone over the cloud (device id + E2E key).
+#[tauri::command]
+fn cloud_pairing(app: AppHandle) -> Result<cloud::CloudPairing, String> {
+    cloud::pairing(&app)
+}
+
 // --- skills ---
 
 /// Bundled skills with their current enabled state, for Settings → Skills.
@@ -1839,6 +1927,7 @@ pub fn run() {
         .manage(PoppedOut::default())
         .manage(watch::WatchManager::default())
         .manage(mobile::MobileState::default())
+        .manage(cloud::CloudState::default())
         .setup(|app| {
             let dir = app
                 .path()
@@ -1856,6 +1945,17 @@ pub fn run() {
             // Background poller that applies replies made from the hosted
             // dashboard into the local agent ptys (no-op when remote is off).
             remote::spawn_poller(app.handle().clone());
+
+            // Always-on loopback RPC so the bundled `evor` CLI (src/bin/evor.rs)
+            // can act on this app's LIVE state from inside agent ptys. Inject its
+            // URL + token into the process env (spawned ptys inherit it); prepend
+            // the binary's dir to PATH so `evor` resolves. Best-effort — if it
+            // doesn't come up, the CLI falls back to appending the JSONL channel.
+            if let Some((url, token)) = localrpc::start(app.handle()) {
+                std::env::set_var("EVORIDE_RPC", &url);
+                std::env::set_var("EVORIDE_RPC_TOKEN", &token);
+            }
+            inject_evor_on_path(app.handle());
 
             // Watch already-open project roots so the file explorer
             // auto-refreshes on external filesystem changes.
@@ -2003,6 +2103,10 @@ pub fn run() {
             mobile_status,
             mobile_start,
             mobile_stop,
+            cloud_status,
+            cloud_start,
+            cloud_stop,
+            cloud_pairing,
             list_skills,
             set_skill_enabled,
             remove_skill,
@@ -2019,6 +2123,7 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app_handle.state::<SessionManager>().kill_all();
                 app_handle.state::<mobile::MobileState>().stop();
+                app_handle.state::<cloud::CloudState>().stop();
             }
         });
 }

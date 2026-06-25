@@ -17,6 +17,7 @@ import { open as tauriOpen, confirm as tauriConfirm } from "@tauri-apps/plugin-d
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow as tauriGetCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
+import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 
 export type { UnlistenFn };
 
@@ -86,6 +87,169 @@ async function validateToken(token: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
+// Cloud transport (browser → evor.dev relay → desktop), end-to-end encrypted.
+//
+// One WebSocket carries both RPC (req/res) and the live event stream as OPAQUE
+// XChaCha20-Poly1305 frames. The relay only sees ciphertext; the key is shared
+// out-of-band via the pairing QR. Mirrors the desktop `cloud.rs` framing:
+//   req: {t:"req",id,cmd,args}  res: {t:"res",id,ok,data|error}  ev: {t:"ev",topic,payload}
+// ---------------------------------------------------------------------------
+
+const CLOUD_KEY = "evor.cloud";
+interface CloudCfg {
+  /** Relay origin (defaults to the page origin when served by evor.dev). */
+  relay?: string;
+  device: string;
+  /** 32-byte E2E key, hex. */
+  key: string;
+}
+
+function hexToBytes(h: string): Uint8Array {
+  const a = new Uint8Array(Math.floor(h.length / 2));
+  for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16);
+  return a;
+}
+
+/** Capture a cloud pairing handed over via `#cloud=<base64url(json)>`. */
+function captureCloudConfig(): void {
+  if (typeof location === "undefined") return;
+  const m = location.hash.match(/[#&]cloud=([A-Za-z0-9_-]+)/);
+  if (!m) return;
+  try {
+    const json = atob(m[1].replace(/-/g, "+").replace(/_/g, "/"));
+    const cfg = JSON.parse(json) as CloudCfg;
+    if (cfg.device && cfg.key) localStorage.setItem(CLOUD_KEY, JSON.stringify(cfg));
+    history.replaceState(null, "", location.pathname + location.search);
+  } catch {
+    /* ignore malformed pairing */
+  }
+}
+
+let cloudCfgCache: CloudCfg | null | undefined;
+function cloudCfg(): CloudCfg | null {
+  if (cloudCfgCache !== undefined) return cloudCfgCache;
+  captureCloudConfig();
+  try {
+    const raw = localStorage.getItem(CLOUD_KEY);
+    cloudCfgCache = raw ? (JSON.parse(raw) as CloudCfg) : null;
+  } catch {
+    cloudCfgCache = null;
+  }
+  return cloudCfgCache;
+}
+
+/** Cloud mode: not Tauri, and a cloud pairing is present. */
+function isCloud(): boolean {
+  return !isTauri() && cloudCfg() !== null;
+}
+
+/** A single encrypted WS to the relay, multiplexing RPC + events. */
+class CloudLink {
+  private key: Uint8Array;
+  private device: string;
+  private relay: string;
+  private ws: WebSocket | null = null;
+  private connecting: Promise<void> | null = null;
+  private seq = 0;
+  private pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private handlers = new Map<string, Set<Handler>>();
+  private enc = new TextEncoder();
+  private dec = new TextDecoder();
+
+  constructor(cfg: CloudCfg) {
+    this.key = hexToBytes(cfg.key);
+    this.device = cfg.device;
+    this.relay = cfg.relay || location.origin;
+  }
+
+  private seal(obj: unknown): Uint8Array {
+    const nonce = crypto.getRandomValues(new Uint8Array(24));
+    const ct = xchacha20poly1305(this.key, nonce).encrypt(this.enc.encode(JSON.stringify(obj)));
+    const out = new Uint8Array(24 + ct.length);
+    out.set(nonce);
+    out.set(ct, 24);
+    return out;
+  }
+
+  private open(data: Uint8Array): unknown | null {
+    if (data.length < 24) return null;
+    try {
+      const pt = xchacha20poly1305(this.key, data.slice(0, 24)).decrypt(data.slice(24));
+      return JSON.parse(this.dec.decode(pt));
+    } catch {
+      return null;
+    }
+  }
+
+  private async connect(): Promise<void> {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.connecting) return this.connecting;
+    this.connecting = new Promise<void>((resolve, reject) => {
+      const wsUrl = this.relay.replace(/^http/, "ws") + `/link/join/${encodeURIComponent(this.device)}`;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error("cloud link failed"));
+      ws.onmessage = (e) => this.onFrame(new Uint8Array(e.data as ArrayBuffer));
+      ws.onclose = () => {
+        this.ws = null;
+        // Fail in-flight calls; listeners reconnect on next use.
+        for (const p of this.pending.values()) p.reject(new Error("cloud link closed"));
+        this.pending.clear();
+      };
+      this.ws = ws;
+    }).finally(() => {
+      this.connecting = null;
+    });
+    return this.connecting;
+  }
+
+  private onFrame(data: Uint8Array): void {
+    const msg = this.open(data) as
+      | { t: "res"; id: string; ok: boolean; data?: unknown; error?: string }
+      | { t: "ev"; topic: string; payload: unknown }
+      | null;
+    if (!msg) return;
+    if (msg.t === "res") {
+      const p = this.pending.get(msg.id);
+      if (!p) return;
+      this.pending.delete(msg.id);
+      if (msg.ok) p.resolve(msg.data);
+      else p.reject(new Error(msg.error ?? "command failed"));
+    } else if (msg.t === "ev") {
+      const set = this.handlers.get(msg.topic);
+      if (set) for (const cb of set) cb({ payload: msg.payload });
+    }
+  }
+
+  async invoke<T>(cmd: string, args: Record<string, unknown>): Promise<T> {
+    await this.connect();
+    const id = `${++this.seq}`;
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.ws!.send(this.seal({ t: "req", id, cmd, args }));
+    });
+  }
+
+  async listen(event: string, cb: Handler): Promise<UnlistenFn> {
+    let set = this.handlers.get(event);
+    if (!set) this.handlers.set(event, (set = new Set()));
+    set.add(cb);
+    await this.connect();
+    return () => {
+      set!.delete(cb);
+      if (set!.size === 0) this.handlers.delete(event);
+    };
+  }
+}
+
+let cloudLinkInst: CloudLink | null = null;
+function cloudLink(): CloudLink {
+  if (!cloudLinkInst) cloudLinkInst = new CloudLink(cloudCfg()!);
+  return cloudLinkInst;
+}
+
+// ---------------------------------------------------------------------------
 // invoke
 // ---------------------------------------------------------------------------
 
@@ -94,6 +258,7 @@ export async function invoke<T = unknown>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   if (isTauri()) return tauriInvoke<T>(cmd, args);
+  if (isCloud()) return cloudLink().invoke<T>(cmd, args ?? {});
 
   const token = await ensureToken();
   const res = await fetch(`/rpc`, {
@@ -157,6 +322,7 @@ export async function listen<T = unknown>(
   cb: (ev: { payload: T }) => void,
 ): Promise<UnlistenFn> {
   if (isTauri()) return tauriListen<T>(event, cb as never);
+  if (isCloud()) return cloudLink().listen(event, cb as Handler);
 
   let set = handlers.get(event);
   if (!set) handlers.set(event, (set = new Set()));

@@ -37,29 +37,24 @@ const END: &str = "<!-- evoride:tasks:end -->";
 /// The managed skill block instructing the agent to report task progress.
 pub fn skill_block() -> String {
     format!(
-        "{START}\n## Find your tasks (EvorIDE)\n\
-         To find the tasks for THIS project (the one you're working in), read the JSON file at \
-         `$EVORIDE_PROJECT_TASKS` — e.g. `cat \"$EVORIDE_PROJECT_TASKS\"`. It's an array of the \
-         project's open tasks: `[{{\"id\":\"...\",\"title\":\"...\",\"status\":\"todo|doing\",\
-         \"description\":\"...\",\"steps\":[...]}}]`. If the user asks what to work on (or you need \
-         the current task), read it first and pick the relevant one. Empty array / missing file = \
-         no tracked tasks.\n\n\
-         ## Starting new work? Create the task first (EvorIDE)\n\
-         If you're about to start something that ISN'T already in `$EVORIDE_PROJECT_TASKS` \
-         (e.g. an idea from this chat), create an EvorIDE task for THIS project FIRST, before you \
-         start changing code — append ONE json line to `$EVORIDE_TASKS`:\n\
-         `echo '{{\"new_task\":\"<short title>\",\"description\":\"<one line of what/why>\"}}' >> \"$EVORIDE_TASKS\"`\n\
-         It's created for the current project, marked in-progress, and linked to you automatically. \
-         Do this once per distinct piece of work; don't recreate a task that already exists. \
-         Do NOT create Jira (or other external) tickets unless the user explicitly asks.\n\n\
-         ## Task status (EvorIDE)\n\
-         As you make progress on the current task, append ONE json line to `$EVORIDE_TASKS` so the \
-         board stays in sync:\n\
-         - When you start: `echo '{{\"status\":\"doing\"}}' >> \"$EVORIDE_TASKS\"`\n\
-         - When you finish: `echo '{{\"status\":\"done\"}}' >> \"$EVORIDE_TASKS\"`\n\
-         - If blocked/unsure: `echo '{{\"status\":\"todo\",\"note\":\"why\"}}' >> \"$EVORIDE_TASKS\"`\n\
-         - To tick off a breakdown step: `echo '{{\"step\":\"<step title>\",\"status\":\"done\"}}' >> \"$EVORIDE_TASKS\"`\n\
-         status is one of todo|doing|done. Report honestly and promptly.\n{END}"
+        "{START}\n## Tasks (EvorIDE)\n\
+         You have an `evor` CLI for THIS project's task board. Use it instead of \
+         guessing — it keeps the board in sync with what you're actually doing.\n\
+         - `evor task list` — what's open (add `--status todo` / `--json`). Run this \
+         first if the user asks what to work on.\n\
+         - `evor task new \"<short title>\" [--desc \"<what/why>\"]` — start NEW work \
+         that isn't already listed. Creates the task, marks it in progress, and binds \
+         it to THIS terminal. Add `--todo` to just queue it. Do this once per distinct \
+         piece of work, before you start changing code; don't recreate an existing task.\n\
+         - `evor task done` — finished the current task. `evor task start` — back to \
+         in progress. `evor task block --note \"why\"` — stuck.\n\
+         - `evor task note \"<text>\"` — progress note. \
+         `evor task step done \"<step title>\"` — tick a breakdown step.\n\
+         Report honestly and promptly. Do NOT create Jira (or other external) tickets \
+         unless the user explicitly asks. Run `evor --help` for the full list.\n\
+         (Fallback if `evor` is unavailable: append one JSON line to `$EVORIDE_TASKS`, \
+         e.g. `echo '{{\"new_task\":\"…\"}}' >> \"$EVORIDE_TASKS\"`; \
+         `{{\"status\":\"doing|done\"}}`; read `$EVORIDE_PROJECT_TASKS` to list.)\n{END}"
     )
 }
 

@@ -50,6 +50,11 @@ struct Secrets {
     /// here (0600) so it's never returned to the webview.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     evor_token: Option<String>,
+    /// E2E pairing key (hex, 32 bytes) for the encrypted cloud link. The relay
+    /// only ever sees ciphertext; this key is shared with the phone OUT OF BAND
+    /// via the pairing QR, so evor.dev can't read or MITM the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cloud_key: Option<String>,
 }
 
 fn secrets_path() -> Option<PathBuf> {
@@ -128,5 +133,32 @@ pub fn has_evor_token() -> bool {
 pub fn save_evor_token(token: Option<String>) -> Result<(), String> {
     let mut s = read();
     s.evor_token = token.filter(|t| !t.trim().is_empty());
+    write(&s)
+}
+
+/// The E2E cloud-link pairing key (32 bytes), creating + persisting one on first
+/// use. Shared with the phone out-of-band via the pairing QR; never sent to the
+/// relay. Returns the raw key bytes.
+pub fn cloud_key_or_create() -> Result<[u8; 32], String> {
+    let mut s = read();
+    if let Some(hex) = s.cloud_key.as_ref() {
+        if let Ok(bytes) = hex::decode(hex) {
+            if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                return Ok(arr);
+            }
+        }
+    }
+    use rand::RngCore;
+    let mut key = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    s.cloud_key = Some(hex::encode(key));
+    write(&s)?;
+    Ok(key)
+}
+
+/// Forget the cloud pairing key (next pairing mints a fresh one — revokes phones).
+pub fn clear_cloud_key() -> Result<(), String> {
+    let mut s = read();
+    s.cloud_key = None;
     write(&s)
 }

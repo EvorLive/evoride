@@ -145,6 +145,30 @@ pub fn dispatch(c: &Ctx, cmd: &str, a: &Value) -> Result<Value, String> {
         "list_tasks" => to_value(c.store.list_tasks(&sarg(a, "projectId")?)),
         "all_tasks" => to_value(c.store.list_all_tasks()),
 
+        // --- tasks (agent CLI channel — `evor` binary, see localrpc.rs) ---
+        // The open tasks for an agent's project, for `evor task list`.
+        "agent_tasks" => {
+            let agent_id = sarg(a, "agentId")?;
+            let pid = c
+                .store
+                .get_agent(&agent_id)
+                .map(|x| x.project_id)
+                .ok_or("unknown agent")?;
+            to_value(c.store.list_tasks(&pid))
+        }
+        // Reconcile an agent's appended task log NOW (so the UI updates live
+        // instead of waiting for the next poll). Returns the touched tasks.
+        "flush_agent_tasks" => {
+            let agent_id = sarg(a, "agentId")?;
+            let project_path = c
+                .store
+                .get_agent(&agent_id)
+                .and_then(|x| c.store.get_project(&x.project_id))
+                .map(|p| p.path)
+                .ok_or("unknown agent/project")?;
+            to_value(crate::apply_agent_tasks(c.store, &project_path, &agent_id))
+        }
+
         // --- settings & misc ---
         "get_settings" => to_value(c.settings.get()),
         "claude_sessions" => to_value(claude::list_sessions(&sarg(a, "cwd")?)),

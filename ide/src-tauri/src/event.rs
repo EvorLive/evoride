@@ -51,6 +51,12 @@ impl EventSink for TauriSink {
                 let _ = tx.send(crate::serve::frame(topic, &payload));
             }
         }
+        // Tee to a connected evor.dev cloud client (encrypted downstream).
+        if let Some(c) = self.0.try_state::<crate::cloud::CloudState>() {
+            if let Some(tx) = c.broadcast() {
+                let _ = tx.send(crate::cloud::event_frame(topic, &payload));
+            }
+        }
     }
 }
 

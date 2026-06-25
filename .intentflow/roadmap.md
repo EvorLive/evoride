@@ -18,6 +18,10 @@ any IDE opening this project sees them. Status: ✅ done · 🚧 in progress ·
 - ⬜ **Tasks & daily planning** — a Tasks page (today/yesterday/unassigned), agents
   create tasks per project (Unassigned when not relatable), provider-agnostic for
   Notion/Jira/evor.live sync. → [plan](plans/tasks-planning.md)
+- ⬜ **`evor` CLI + task↔session lifecycle** — unified context-aware `evor` binary
+  (local RPC vs cloud) replacing echo-hacks; create=todo / attach=doing; stale
+  reconcile on exit; one terminal per task (play/goto reuse); resume status.
+  → [plan](plans/evor-cli-task-sessions.md)
 
 ## Bigger bets
 - ⬜ **Cross-project memory in Claude** — reference another workspace project's

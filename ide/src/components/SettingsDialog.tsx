@@ -3,7 +3,7 @@ import * as api from "../lib/tauri";
 import type { SkillInfo } from "../lib/tauri";
 import type { AgentConfig } from "../lib/agents";
 
-type Tab = "general" | "agents" | "skills" | "jira" | "remote" | "mobile";
+type Tab = "general" | "agents" | "skills" | "jira" | "remote" | "mobile" | "cloud";
 
 // A simple on/off switch row.
 function Toggle({
@@ -350,6 +350,85 @@ function MobileTab() {
   );
 }
 
+// The Cloud tab: reach this IDE from anywhere via evor.dev, end-to-end
+// encrypted. Dials out to the relay; the phone scans a QR carrying the E2E key
+// (evor.dev only relays ciphertext). Requires evor.dev connected in Remote.
+function CloudTab() {
+  const [status, setStatus] = useState<api.CloudStatus | null>(null);
+  const [pairing, setPairing] = useState<api.CloudPairing | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api
+      .cloudStatus()
+      .then((s) => {
+        setStatus(s);
+        if (s.running) api.cloudPairing().then(setPairing).catch(() => {});
+      })
+      .catch(() => {});
+  }, []);
+
+  const start = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      setStatus(await api.cloudStart());
+      setPairing(await api.cloudPairing());
+    } catch (e) {
+      setErr(typeof e === "string" ? e : (e as Error)?.message || "Could not start.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const stop = async () => {
+    setBusy(true);
+    try {
+      setStatus(await api.cloudStop());
+      setPairing(null);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="set-section">
+      <div className="set-section-title">Cloud access</div>
+      <p className="set-row-hint" style={{ marginBottom: 14 }}>
+        Reach this IDE from anywhere through <strong>evor.dev</strong> — not just
+        your Wi-Fi. The connection is <strong>end-to-end encrypted</strong>:
+        evor.dev only relays ciphertext, and the key travels in the QR you scan,
+        never to the server. Connect evor.dev in <strong>Remote</strong> first.
+      </p>
+
+      {!status?.running ? (
+        <button className="btn primary" onClick={start} disabled={busy}>
+          {busy ? "Connecting…" : "Start cloud access"}
+        </button>
+      ) : (
+        <>
+          {pairing?.qr_svg && (
+            <div className="mobile-qr" dangerouslySetInnerHTML={{ __html: pairing.qr_svg }} />
+          )}
+          <p className="set-row-hint" style={{ marginTop: 4 }}>
+            Scan this on your phone (it carries the encryption key — treat it like
+            a password). Connected via {status.url}.
+          </p>
+          <div className="jira-actions">
+            <button className="btn-ghost danger" onClick={stop} disabled={busy}>
+              {busy ? "Stopping…" : "Stop cloud access"}
+            </button>
+          </div>
+        </>
+      )}
+
+      {err && <p className="jira-status err" style={{ marginTop: 10 }}>{err}</p>}
+    </div>
+  );
+}
+
 // Preferences dialog — opened from the File ▸ Settings… menu (⌘,), the gear
 // icon, or the command palette. Works the same on macOS and Windows.
 export default function SettingsDialog({
@@ -490,6 +569,7 @@ export default function SettingsDialog({
     { id: "jira", label: "Jira" },
     { id: "remote", label: "Remote" },
     { id: "mobile", label: "Mobile" },
+    { id: "cloud", label: "Cloud" },
   ];
 
   return (
@@ -716,6 +796,8 @@ export default function SettingsDialog({
           {tab === "remote" && <RemoteTab onChanged={onRemoteChanged} />}
 
           {tab === "mobile" && <MobileTab />}
+
+          {tab === "cloud" && <CloudTab />}
         </div>
       </div>
     </div>
