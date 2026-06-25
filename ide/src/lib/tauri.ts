@@ -1,14 +1,21 @@
 // Typed bridge to the Rust backend (commands + pty events + folder picker).
 // Tauri converts camelCase JS arg keys to the snake_case Rust params.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open, confirm } from "@tauri-apps/plugin-dialog";
-import { getVersion } from "@tauri-apps/api/app";
+// Transport-agnostic bridge: native Tauri IPC in the desktop app, HTTP/WS to
+// `evor-daemon` in a remote browser. Every command/event call below routes
+// through these — so the same UI runs locally or against a remote backend.
+import {
+  invoke,
+  listen,
+  pickFolder,
+  confirmDialog,
+  appVersion,
+  type UnlistenFn,
+} from "./bridge";
 
 /// The app's real version (from tauri.conf.json, which the release workflow
-/// stamps from the git tag) — so the UI reflects the published release.
-export const appVersion = () => getVersion();
+/// stamps from the git tag) — or "web" when served by the daemon.
+export { appVersion, pickFolder };
 
 export interface Project {
   id: string;
@@ -112,12 +119,6 @@ export const deleteSuperProject = (id: string) =>
 export const setSuperProjectMembers = (id: string, projectIds: string[]) =>
   invoke("set_super_project_members", { id, projectIds });
 
-/** Native folder picker; returns the chosen path or null. */
-export async function pickFolder(): Promise<string | null> {
-  const res = await open({ directory: true, multiple: false });
-  return typeof res === "string" ? res : null;
-}
-
 // --- agents ---
 export const listAgents = (projectId: string) =>
   invoke<AgentRecord[]>("list_agents", { projectId });
@@ -155,6 +156,9 @@ export const closeAgent = (id: string) => invoke("close_agent", { id });
 export const markAgentExited = (id: string) => invoke("mark_agent_exited", { id });
 export const agentScrollback = (id: string) =>
   invoke<string>("agent_scrollback", { id });
+/// Current [rows, cols] of an agent's pty (so a remote viewer can match it).
+export const agentSize = (id: string) =>
+  invoke<[number, number] | null>("agent_size", { id });
 export const archiveAgent = (id: string) => invoke("archive_agent", { id });
 export const deleteAgent = (id: string) => invoke("delete_agent", { id });
 
@@ -354,9 +358,9 @@ export interface Service {
   /// commands, or read from the run config.
   down?: string;
 }
-/// Native confirm dialog used before spawning an untrusted run command.
+/// Confirm dialog used before spawning an untrusted run command.
 export const confirmRun = (message: string) =>
-  confirm(message, { title: "Run this command?", kind: "warning" });
+  confirmDialog(message, { title: "Run this command?", kind: "warning" });
 export const runConfig = (projectId: string, path: string) =>
   invoke<Service[]>("run_config", { projectId, path });
 export const createRunConfig = (path: string) =>
@@ -465,6 +469,22 @@ export const remoteNotify = (args: {
 }) => invoke("remote_notify", args);
 export const remoteResolve = (agentId: string) =>
   invoke("remote_resolve", { agentId });
+
+// --- mobile access (open this IDE on a phone over the LAN) ---
+export interface MobileStatus {
+  running: boolean;
+  /** LAN URL to open on the phone. */
+  url: string;
+  /** Session code (also the bearer token). */
+  code: string;
+  /** Inline SVG QR encoding the quick link (url/#t=code), or "". */
+  qr_svg: string;
+}
+export const mobileStatus = () => invoke<MobileStatus>("mobile_status");
+/** Start the LAN daemon; returns the URL + code + QR to show. */
+export const mobileStart = (port?: number) =>
+  invoke<MobileStatus>("mobile_start", { port });
+export const mobileStop = () => invoke<MobileStatus>("mobile_stop");
 /** Fires when a reply made from the dashboard is applied to a local agent. */
 export async function onRemoteReply(
   cb: (agentId: string) => void,

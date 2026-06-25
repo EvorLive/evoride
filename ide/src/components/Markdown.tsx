@@ -1,5 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/bridge";
 
 // Render markdown safely. `marked` + `dompurify` are imported dynamically so
 // they're a lazily-loaded chunk (not in the initial bundle).

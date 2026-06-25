@@ -3,7 +3,7 @@ import * as api from "../lib/tauri";
 import type { SkillInfo } from "../lib/tauri";
 import type { AgentConfig } from "../lib/agents";
 
-type Tab = "general" | "agents" | "skills" | "jira" | "remote";
+type Tab = "general" | "agents" | "skills" | "jira" | "remote" | "mobile";
 
 // A simple on/off switch row.
 function Toggle({
@@ -272,6 +272,84 @@ function RemoteTab({ onChanged }: { onChanged?: () => void }) {
   );
 }
 
+// The Mobile tab: open this IDE on your phone. Starts a local LAN server (the
+// bundled evor-daemon) and shows a QR + code to connect from a phone on the same
+// Wi-Fi — no app install, the browser loads the mobile IDE.
+function MobileTab() {
+  const [st, setSt] = useState<api.MobileStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.mobileStatus().then(setSt).catch(() => {});
+  }, []);
+
+  const start = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      setSt(await api.mobileStart());
+    } catch (e) {
+      setErr(typeof e === "string" ? e : (e as Error)?.message || "Could not start.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const stop = async () => {
+    setBusy(true);
+    try {
+      setSt(await api.mobileStop());
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="set-section">
+      <div className="set-section-title">Mobile access</div>
+      <p className="set-row-hint" style={{ marginBottom: 14 }}>
+        Open this IDE on your phone. This starts a small server on your local
+        network — scan the QR from a phone on the <strong>same Wi-Fi</strong> (no
+        app install) and you get the mobile IDE. Anyone on the network with the
+        code can connect, so stop it when you’re done.
+      </p>
+
+      {!st?.running ? (
+        <button className="btn primary" onClick={start} disabled={busy}>
+          {busy ? "Starting…" : "Start mobile access"}
+        </button>
+      ) : (
+        <>
+          {st.qr_svg && (
+            <div className="mobile-qr" dangerouslySetInnerHTML={{ __html: st.qr_svg }} />
+          )}
+          <label className="jira-field">
+            <span>URL</span>
+            <input readOnly value={st.url} onFocus={(e) => e.currentTarget.select()} />
+          </label>
+          <label className="jira-field">
+            <span>Code</span>
+            <input readOnly value={st.code} onFocus={(e) => e.currentTarget.select()} />
+          </label>
+          <p className="set-row-hint" style={{ marginTop: 4 }}>
+            Scan the QR (it includes the code), or open the URL on your phone and
+            enter the code once.
+          </p>
+          <div className="jira-actions">
+            <button className="btn-ghost danger" onClick={stop} disabled={busy}>
+              {busy ? "Stopping…" : "Stop mobile access"}
+            </button>
+          </div>
+        </>
+      )}
+
+      {err && <p className="jira-status err" style={{ marginTop: 10 }}>{err}</p>}
+    </div>
+  );
+}
+
 // Preferences dialog — opened from the File ▸ Settings… menu (⌘,), the gear
 // icon, or the command palette. Works the same on macOS and Windows.
 export default function SettingsDialog({
@@ -411,6 +489,7 @@ export default function SettingsDialog({
     { id: "skills", label: "Skills" },
     { id: "jira", label: "Jira" },
     { id: "remote", label: "Remote" },
+    { id: "mobile", label: "Mobile" },
   ];
 
   return (
@@ -635,6 +714,8 @@ export default function SettingsDialog({
           {tab === "jira" && <JiraTab />}
 
           {tab === "remote" && <RemoteTab onChanged={onRemoteChanged} />}
+
+          {tab === "mobile" && <MobileTab />}
         </div>
       </div>
     </div>

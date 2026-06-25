@@ -20,7 +20,9 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+
+use crate::event::{self, Sink};
+use crate::store::Store;
 
 /// Holds one live debouncer per (canonical) project root. Keeping the
 /// `Debouncer` alive is what keeps the watch active; dropping it stops it.
@@ -52,10 +54,7 @@ fn should_ignore(path: &Path) -> bool {
 /// Reconcile the active watchers with the currently-open projects: start a
 /// watcher for any newly-opened root, drop watchers for closed ones. Safe to
 /// call repeatedly (on startup and whenever a project is added/removed).
-pub fn sync(app: &AppHandle) {
-    let store = app.state::<crate::store::Store>();
-    let mgr = app.state::<WatchManager>();
-
+pub fn sync(store: &Store, mgr: &WatchManager, sink: Sink) {
     // Canonical root -> the original path string the webview uses for it.
     let mut desired: HashMap<PathBuf, String> = HashMap::new();
     for p in store.list_projects() {
@@ -70,7 +69,7 @@ pub fn sync(app: &AppHandle) {
         if watchers.contains_key(&canon) {
             continue;
         }
-        match make_watcher(app.clone(), &canon, original) {
+        match make_watcher(sink.clone(), &canon, original) {
             Ok(d) => {
                 watchers.insert(canon, d);
             }
@@ -80,7 +79,7 @@ pub fn sync(app: &AppHandle) {
 }
 
 fn make_watcher(
-    app: AppHandle,
+    sink: Sink,
     canon: &Path,
     original: String,
 ) -> Result<Debouncer<RecommendedWatcher>, notify_debouncer_mini::notify::Error> {
@@ -88,7 +87,8 @@ fn make_watcher(
         if let Ok(events) = res {
             // Only refresh when something outside the ignored dirs changed.
             if events.iter().any(|e| !should_ignore(&e.path)) {
-                let _ = app.emit(
+                event::emit(
+                    sink.as_ref(),
                     "fs-changed",
                     FsChanged {
                         root: original.clone(),

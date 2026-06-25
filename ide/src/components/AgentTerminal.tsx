@@ -4,11 +4,33 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   agentScrollback,
+  agentSize,
   onAgentExit,
   onAgentOutput,
   resizeAgent,
   writeInput,
 } from "../lib/tauri";
+import { isTauri } from "../lib/bridge";
+
+/// The PTY is shared between the desktop and any connected phone. Only the
+/// desktop (native) drives its size — otherwise a phone's narrow xterm would
+/// resize the shared PTY and reflow the desktop to mobile width. The remote
+/// client renders into whatever size the desktop set.
+function pushResize(id: string, rows: number, cols: number) {
+  if (isTauri()) void resizeAgent(id, rows, cols);
+}
+
+/// Remote (phone) only: scale the real terminal render down so its full width
+/// fits the pane. The pty is one size; we can't reflow a TUI, so we zoom.
+function fitHostZoom(host: HTMLElement) {
+  const xt = host.querySelector(".xterm") as HTMLElement | null;
+  const pane = host.parentElement;
+  if (!xt || !pane) return;
+  host.style.zoom = "1"; // reset to measure the natural render width
+  const w = xt.offsetWidth;
+  if (w < 5) return;
+  host.style.zoom = `${Math.min(1, (pane.clientWidth - 2) / w)}`;
+}
 
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -242,21 +264,51 @@ export default function AgentTerminal({
     };
     host.addEventListener("contextmenu", onContext);
 
+    // On a phone (remote browser) we don't own the pty: match its size so the
+    // rendering is identical to the desktop, and let the pane scroll/zoom. On
+    // desktop we fit the pty to the tile.
+    const remote = !isTauri();
+
+    // Size the xterm to the shared pty (remote viewer only).
+    const matchPty = () =>
+      agentSize(id)
+        .then((sz) => {
+          if (sz && !disposed) {
+            try {
+              term.resize(sz[1], sz[0]); // [rows, cols] -> resize(cols, rows)
+            } catch {
+              /* detached */
+            }
+          }
+        })
+        .catch(() => {});
+
+    // Remote (phone): the pty is one size (the desktop's). We can't reflow a
+    // full-screen TUI, so scale the real render down to fit the phone's width —
+    // the whole terminal is visible, pinch to zoom for detail, scroll for height.
+    const fitRemote = () => fitHostZoom(host);
+
     // Only fit/resize when the tile is actually visible with real width —
     // fitting while hidden (display:none) would size the pty to ~1 column.
     const doFit = () => {
+      if (remote) {
+        fitRemote();
+        return; // remote never resizes the shared pty
+      }
       if (host.offsetWidth < 30 || host.offsetHeight < 20) return;
       try {
         fit.fit();
-        if (term.cols > 1) void resizeAgent(id, term.rows, term.cols);
+        if (term.cols > 1) pushResize(id, term.rows, term.cols);
       } catch {
         /* detached */
       }
     };
     doFit();
 
+    // Desktop: refit the pty on tile resize. Remote: re-scale on viewport change
+    // (observe the pane, not the host — zooming the host would loop).
     const ro = new ResizeObserver(doFit);
-    ro.observe(host);
+    ro.observe(remote ? host.parentElement ?? host : host);
 
     const decoder = new TextDecoder();
     let scanBuf = "";
@@ -265,10 +317,13 @@ export default function AgentTerminal({
     const track = (u: () => void) => (disposed ? u() : unlisteners.push(u));
 
     // Restore prior context from the backend scrollback (the tile may have been
-    // discarded while running), THEN attach to live output.
-    agentScrollback(id)
+    // discarded while running), THEN attach to live output. On a phone, match
+    // the pty size FIRST so the restored buffer lays out at the right width.
+    (remote ? matchPty() : Promise.resolve())
+      .then(() => agentScrollback(id))
       .then((b64) => {
         if (!disposed && b64) term.write(b64ToBytes(b64));
+        if (remote && !disposed) requestAnimationFrame(fitRemote);
       })
       .catch(() => {})
       .finally(() => {
@@ -323,8 +378,23 @@ export default function AgentTerminal({
     const raf = requestAnimationFrame(() => {
       if (host.offsetWidth < 30) return;
       try {
-        fit.fit();
-        if (term.cols > 1) void resizeAgent(id, term.rows, term.cols);
+        if (isTauri()) {
+          fit.fit();
+          if (term.cols > 1) pushResize(id, term.rows, term.cols);
+        } else {
+          // Remote: re-match the shared pty in case the desktop resized it,
+          // then re-scale to fit the phone width.
+          void agentSize(id).then((sz) => {
+            if (sz) {
+              try {
+                term.resize(sz[1], sz[0]);
+              } catch {
+                /* detached */
+              }
+            }
+            requestAnimationFrame(() => fitHostZoom(host));
+          });
+        }
         term.focus();
       } catch {
         /* detached */

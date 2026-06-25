@@ -14,6 +14,14 @@ edition = "2021"
 name = "ide_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Headless backend host: runs the same IDE backend (commands + event streams)
+# over LAN HTTP/WS and serves the web UI, so a browser on another machine gets
+# the exact same experience. Reuses `ide_lib` so the confine/trust gates can't
+# drift from the desktop app. See src/bin/evor-daemon.rs.
+[[bin]]
+name = "evor-daemon"
+path = "src/bin/evor-daemon.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -29,6 +37,19 @@ base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 eterm-core = { path = "../../core" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+# --- evor-daemon (headless LAN backend host) ---
+# Only the `evor-daemon` binary uses these; the desktop lib ignores them. Pinned
+# to the same versions as the `eterm-server` crate to share the build cache.
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+futures-util = "0.3"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+# QR generation for the in-IDE "Mobile access" panel (renders an inline SVG).
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 
 # Faster dev rebuilds: full debuginfo (debug=2) makes the link step of this

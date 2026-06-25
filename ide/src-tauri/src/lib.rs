@@ -2,26 +2,34 @@
 //! agents in one place; agents (live + history) are persisted so they can be
 //! resumed; tasks track the plan per project.
 
-mod claude;
-mod edits;
-mod fs;
-mod git;
-mod guard;
-mod intent;
-mod jira;
-mod judge;
-mod pause;
-mod proctree;
+// Modules are `pub` so the headless `evor-daemon` binary (which depends on this
+// crate as `ide_lib`) can reuse the exact same backend logic — file confinement,
+// git, the pty session manager, the store — instead of forking it. Keeping one
+// implementation is a security invariant: the confine/trust gates must not drift
+// between the desktop app and the daemon.
+pub mod claude;
+pub mod edits;
+pub mod event;
+pub mod fs;
+pub mod git;
+pub mod guard;
+pub mod intent;
+pub mod jira;
+pub mod judge;
+pub mod mobile;
+pub mod pause;
+pub mod proctree;
 mod remote;
-mod run;
-mod secrets;
-mod session;
-mod settings;
-mod skills;
-mod store;
-mod summary;
-mod tasktrack;
-mod watch;
+pub mod run;
+pub mod secrets;
+pub mod serve;
+pub mod session;
+pub mod settings;
+pub mod skills;
+pub mod store;
+pub mod summary;
+pub mod tasktrack;
+pub mod watch;
 
 use claude::{ClaudeSession, ClaudeUsage};
 use edits::EditRecord;
@@ -31,6 +39,7 @@ use git::{Branches, FileChange, GitStatus};
 use run::Service;
 use session::SessionManager;
 use settings::{Settings, SettingsStore};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use store::{AgentRecord, Project, Store, Task};
@@ -40,7 +49,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuild
 /// Serializes mutating git operations so concurrent pulls/commits/pushes across
 /// windows or buttons don't clobber each other.
 #[derive(Default)]
-struct GitLock(Mutex<()>);
+pub struct GitLock(pub Mutex<()>);
 
 /// Per-agent cache of the last judged (tail-hash → verdict), so an agent whose
 /// output hasn't changed isn't re-sent to the LLM — pure repeated work.
@@ -152,10 +161,23 @@ fn close_popout(app: AppHandle, id: String) {
 
 // --- projects ---
 
+/// Reconcile the file watchers with the open projects, emitting `fs-changed`
+/// through the Tauri webview. Thin adapter so the `watch` module stays
+/// transport-agnostic (the daemon calls `watch::sync` with its own sink).
+fn watch_sync(app: &AppHandle) {
+    let store = app.state::<Store>();
+    let mgr = app.state::<watch::WatchManager>();
+    watch::sync(
+        store.inner(),
+        mgr.inner(),
+        Arc::new(event::TauriSink(app.clone())),
+    );
+}
+
 #[tauri::command]
 fn add_project(app: AppHandle, store: State<Store>, path: String) -> Project {
     let project = store.add_project(&path);
-    watch::sync(&app); // start watching the newly-opened root for the explorer
+    watch_sync(&app); // start watching the newly-opened root for the explorer
     project
 }
 
@@ -167,7 +189,7 @@ fn list_projects(store: State<Store>) -> Vec<Project> {
 #[tauri::command]
 fn remove_project(app: AppHandle, store: State<Store>, id: String) {
     store.remove_project(&id);
-    watch::sync(&app); // stop watching the closed root
+    watch_sync(&app); // stop watching the closed root
 }
 
 // --- super-projects (named groups of separate-repo projects) ---
@@ -201,7 +223,7 @@ fn set_super_project_members(store: State<Store>, id: String, project_ids: Vec<S
 
 /// Append the agent's own continue flag when resuming, so e.g. Claude Code picks
 /// up its prior session instead of starting cold.
-fn resume_command(command: &str) -> String {
+pub fn resume_command(command: &str) -> String {
     let head = command.split_whitespace().next().unwrap_or("");
     let base = head.rsplit('/').next().unwrap_or(head);
     match base {
@@ -213,7 +235,7 @@ fn resume_command(command: &str) -> String {
 
 /// Like `resume_command` but idempotent — if the stored command already carries
 /// a continue/resume flag (e.g. a continued session), re-use it as-is.
-fn resume_for(command: &str) -> String {
+pub fn resume_for(command: &str) -> String {
     if command.contains("--continue")
         || command.contains("--resume")
         || command.contains(" resume")
@@ -311,7 +333,7 @@ fn spawn_agent(
     let project_tasks_path = write_project_tasks(&store, &project.path, &project_id, &rec.id);
 
     manager.spawn(
-        app,
+        Arc::new(event::TauriSink(app.clone())),
         rec.id.clone(),
         title,
         cwd,
@@ -357,7 +379,7 @@ fn resume_agent(
     let project_tasks_path = write_project_tasks(&store, &project_root, &rec.project_id, &rec.id);
 
     manager.spawn(
-        app,
+        Arc::new(event::TauriSink(app.clone())),
         rec.id.clone(),
         rec.title.clone(),
         rec.cwd.clone(),
@@ -414,6 +436,12 @@ fn set_agent_title(store: State<Store>, id: String, title: String) {
 fn agent_scrollback(manager: State<SessionManager>, id: String) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(manager.scrollback(&id))
+}
+
+/// Current (rows, cols) of an agent's pty, so a remote viewer can match it.
+#[tauri::command]
+fn agent_size(manager: State<SessionManager>, id: String) -> Option<(u16, u16)> {
+    manager.size(&id)
 }
 
 /// Ask the hidden helper (claude/codex) to classify an idle agent's state.
@@ -672,7 +700,7 @@ async fn breakdown_task(store: State<'_, Store>, id: String) -> Result<Task, Str
 /// `$EVORIDE_PROJECT_TASKS` to find what to work on. Returns the path (string)
 /// to hand to the pty env. Best-effort — failures degrade to a missing file,
 /// which the skill block treats as "no tracked tasks".
-fn write_project_tasks(store: &Store, project_root: &str, project_id: &str, agent_id: &str) -> String {
+pub fn write_project_tasks(store: &Store, project_root: &str, project_id: &str, agent_id: &str) -> String {
     let path = tasktrack::project_tasks_path(project_root, agent_id);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -1587,6 +1615,27 @@ fn remote_resolve(app: AppHandle, agent_id: String) {
     remote::resolve(app, agent_id);
 }
 
+// --- mobile access (open this IDE on a phone via the LAN daemon) ---
+
+#[tauri::command]
+fn mobile_status(state: State<mobile::MobileState>) -> mobile::MobileStatus {
+    state.status()
+}
+
+#[tauri::command]
+fn mobile_start(
+    app: AppHandle,
+    state: State<mobile::MobileState>,
+    port: Option<u16>,
+) -> Result<mobile::MobileStatus, String> {
+    state.start(&app, port)
+}
+
+#[tauri::command]
+fn mobile_stop(state: State<mobile::MobileState>) -> mobile::MobileStatus {
+    state.stop()
+}
+
 // --- skills ---
 
 /// Bundled skills with their current enabled state, for Settings → Skills.
@@ -1789,6 +1838,7 @@ pub fn run() {
         .manage(JudgeCache::default())
         .manage(PoppedOut::default())
         .manage(watch::WatchManager::default())
+        .manage(mobile::MobileState::default())
         .setup(|app| {
             let dir = app
                 .path()
@@ -1809,7 +1859,7 @@ pub fn run() {
 
             // Watch already-open project roots so the file explorer
             // auto-refreshes on external filesystem changes.
-            watch::sync(app.handle());
+            watch_sync(app.handle());
 
             // Native window menu. File: Open Project / New Window / Home / Quit,
             // plus an Edit submenu (predefined items) so macOS shortcuts work.
@@ -1868,6 +1918,7 @@ pub fn run() {
             close_agent,
             mark_agent_exited,
             agent_scrollback,
+            agent_size,
             judge_agent,
             judge_agents,
             judge_helper,
@@ -1949,6 +2000,9 @@ pub fn run() {
             set_remote_token,
             remote_notify,
             remote_resolve,
+            mobile_status,
+            mobile_start,
+            mobile_stop,
             list_skills,
             set_skill_enabled,
             remove_skill,
@@ -1960,9 +2014,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // On exit, kill every running agent so no pty/service is orphaned.
+            // On exit, kill every running agent so no pty/service is orphaned,
+            // and stop the mobile-access daemon child if it's running.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app_handle.state::<SessionManager>().kill_all();
+                app_handle.state::<mobile::MobileState>().stop();
             }
         });
 }

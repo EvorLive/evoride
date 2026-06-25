@@ -1,0 +1,224 @@
+// Transport bridge: lets the EXACT SAME React app run two ways.
+//
+//  * Desktop (Tauri): `invoke`/`listen` go through native in-process IPC.
+//  * Remote (browser → evor-daemon): the same calls become HTTP `POST /rpc`
+//    and a single `WS /events` subscription, authed with a session token.
+//
+// `tauri.ts` imports `invoke`/`listen`/`pickFolder`/`confirmDialog`/`appVersion`
+// from here instead of straight from `@tauri-apps/*`, so ~100 call sites are
+// transport-agnostic and nothing else in the UI has to change.
+//
+// Mode is decided once at load: if the Tauri runtime globals are present we're
+// the desktop app; otherwise we're a browser pointed at the daemon.
+
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open as tauriOpen, confirm as tauriConfirm } from "@tauri-apps/plugin-dialog";
+import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow as tauriGetCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
+
+export type { UnlistenFn };
+
+/** True when running inside the Tauri desktop shell (native IPC available). */
+export const isTauri = (): boolean =>
+  typeof window !== "undefined" &&
+  // Tauri v2 injects these internals into the webview.
+  ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
+// ---------------------------------------------------------------------------
+// Remote (browser) session token
+// ---------------------------------------------------------------------------
+
+const TOKEN_KEY = "evor.daemon.token";
+
+/** Capture a token handed over via the quick-link fragment (`#t=...`). */
+function captureHashToken(): void {
+  if (typeof location === "undefined") return;
+  const m = location.hash.match(/[#&]t=([0-9a-fA-F]+)/);
+  if (m) {
+    localStorage.setItem(TOKEN_KEY, m[1]);
+    // Strip it from the address bar so it isn't shoulder-surfed or bookmarked.
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+}
+
+let tokenPromise: Promise<string> | null = null;
+
+/** Resolve the session token: from the fragment, from localStorage, or by
+ *  prompting for the session code and exchanging it at `/auth`. Cached. */
+function ensureToken(): Promise<string> {
+  if (tokenPromise) return tokenPromise;
+  tokenPromise = (async () => {
+    captureHashToken();
+    let token = localStorage.getItem(TOKEN_KEY) ?? "";
+    // Validate (or obtain) by round-tripping the code through /auth.
+    for (;;) {
+      if (token) {
+        const ok = await validateToken(token);
+        if (ok) return token;
+        localStorage.removeItem(TOKEN_KEY);
+      }
+      const code = window.prompt("Enter the EvorIDE session code from the daemon:");
+      if (!code) {
+        // User dismissed — back off briefly so we don't busy-loop on every call.
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      token = code.trim();
+      localStorage.setItem(TOKEN_KEY, token);
+    }
+  })();
+  return tokenPromise;
+}
+
+async function validateToken(token: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/auth`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: token }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// invoke
+// ---------------------------------------------------------------------------
+
+export async function invoke<T = unknown>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  if (isTauri()) return tauriInvoke<T>(cmd, args);
+
+  const token = await ensureToken();
+  const res = await fetch(`/rpc`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ cmd, args: args ?? {} }),
+  });
+  if (res.status === 401) {
+    // Token went stale (daemon restarted → new code). Drop it and retry once.
+    localStorage.removeItem(TOKEN_KEY);
+    tokenPromise = null;
+    return invoke<T>(cmd, args);
+  }
+  const body = (await res.json()) as { ok: boolean; data?: T; error?: string };
+  if (!body.ok) throw new Error(body.error ?? "command failed");
+  return body.data as T;
+}
+
+// ---------------------------------------------------------------------------
+// listen — one shared WS multiplexed by topic, mimicking Tauri's event bus
+// ---------------------------------------------------------------------------
+
+type Handler = (ev: { payload: unknown }) => void;
+const handlers = new Map<string, Set<Handler>>();
+let socket: WebSocket | null = null;
+let connecting = false;
+
+async function ensureSocket(): Promise<void> {
+  if (isTauri() || connecting || socket) return;
+  connecting = true;
+  try {
+    const token = await ensureToken();
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/events?token=${encodeURIComponent(token)}`);
+    ws.onmessage = (e) => {
+      try {
+        const { topic, payload } = JSON.parse(e.data as string);
+        const set = handlers.get(topic);
+        if (set) for (const cb of set) cb({ payload });
+      } catch {
+        /* ignore malformed frame */
+      }
+    };
+    ws.onclose = () => {
+      socket = null;
+      // Reconnect if anyone is still listening.
+      if (handlers.size) setTimeout(() => void ensureSocket(), 1000);
+    };
+    ws.onerror = () => ws.close();
+    socket = ws;
+  } finally {
+    connecting = false;
+  }
+}
+
+export async function listen<T = unknown>(
+  event: string,
+  cb: (ev: { payload: T }) => void,
+): Promise<UnlistenFn> {
+  if (isTauri()) return tauriListen<T>(event, cb as never);
+
+  let set = handlers.get(event);
+  if (!set) handlers.set(event, (set = new Set()));
+  set.add(cb as Handler);
+  await ensureSocket();
+  return () => {
+    set!.delete(cb as Handler);
+    if (set!.size === 0) handlers.delete(event);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dialogs + version (Tauri plugins have browser fallbacks)
+// ---------------------------------------------------------------------------
+
+/** Pick a folder. Native uses the OS dialog; remote prompts for a server-side
+ *  path (a proper remote directory browser is a follow-up). */
+export async function pickFolder(): Promise<string | null> {
+  if (isTauri()) {
+    const res = await tauriOpen({ directory: true, multiple: false });
+    return typeof res === "string" ? res : null;
+  }
+  const p = window.prompt("Project path on the daemon host:");
+  return p && p.trim() ? p.trim() : null;
+}
+
+/** Confirm dialog. Native uses the OS dialog; remote uses `window.confirm`. */
+export async function confirmDialog(
+  message: string,
+  opts?: { title?: string; kind?: "warning" | "info" | "error" },
+): Promise<boolean> {
+  if (isTauri()) return tauriConfirm(message, opts);
+  return window.confirm(`${opts?.title ? opts.title + "\n\n" : ""}${message}`);
+}
+
+export async function appVersion(): Promise<string> {
+  if (isTauri()) return getVersion();
+  return "web";
+}
+
+/** A subset of the Tauri Window API the app actually uses. The native call
+ *  `getCurrentWindow()` reads `__TAURI_INTERNALS__.metadata`, which is undefined
+ *  in a plain browser — hence the shim with the methods (setTheme/setTitle) the
+ *  UI relies on. Importing the native fn is safe; only *calling* it touches the
+ *  internals, and we only do that under `isTauri()`. */
+interface AppWindow {
+  setTheme(theme?: string | null): Promise<void>;
+  setTitle(title: string): Promise<void>;
+}
+
+export function getCurrentWindow(): AppWindow {
+  if (isTauri()) return tauriGetCurrentWindow() as unknown as AppWindow;
+  return {
+    setTheme: async () => {},
+    setTitle: async (title: string) => {
+      if (typeof document !== "undefined") document.title = title;
+    },
+  };
+}
+
+/** Open a URL in the OS browser (Tauri) or a new tab (remote). */
+export async function openUrl(url: string): Promise<void> {
+  if (isTauri()) return tauriOpenUrl(url);
+  window.open(url, "_blank", "noopener,noreferrer");
+}

@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+
+use crate::event::{self, Sink};
 
 /// Per-session scrollback cap so a discarded tile can be restored on return.
 const SCROLLBACK_CAP: usize = 512 * 1024;
@@ -96,7 +97,7 @@ impl SessionManager {
     /// store record) and start streaming its output to the frontend.
     pub fn spawn(
         &self,
-        app: AppHandle,
+        sink: Sink,
         id: String,
         title: String,
         cwd: String,
@@ -155,7 +156,7 @@ impl SessionManager {
         // Reader thread: pump pty output to the frontend until EOF.
         let scrollback = Arc::new(Mutex::new(Vec::<u8>::new()));
         let ev_id = id.clone();
-        let ev_app = app.clone();
+        let ev_sink = sink.clone();
         let sb = scrollback.clone();
         std::thread::spawn(move || {
             // Rolling tail (shared eterm-core) for issue detection on exit.
@@ -193,7 +194,8 @@ impl SessionManager {
                                 waiting = now_waiting;
                                 options = now_options.clone();
                                 question = now_question.clone();
-                                let _ = ev_app.emit(
+                                event::emit(
+                                    ev_sink.as_ref(),
                                     "agent-waiting",
                                     WaitingEvent {
                                         id: ev_id.clone(),
@@ -212,7 +214,8 @@ impl SessionManager {
                                 let (message, reset_clock, reset_tz, reset_epoch) = rl
                                     .map(|r| (r.message, r.reset_clock, r.reset_tz, r.reset_epoch))
                                     .unwrap_or_default();
-                                let _ = ev_app.emit(
+                                event::emit(
+                                    ev_sink.as_ref(),
                                     "agent-rate-limited",
                                     RateLimitEvent {
                                         id: ev_id.clone(),
@@ -234,7 +237,8 @@ impl SessionManager {
                             }
                         }
                         let data = B64.encode(&buf[..n]);
-                        let _ = ev_app.emit(
+                        event::emit(
+                            ev_sink.as_ref(),
                             "pty-output",
                             OutputEvent {
                                 id: ev_id.clone(),
@@ -245,7 +249,8 @@ impl SessionManager {
                     Err(_) => break,
                 }
             }
-            let _ = ev_app.emit(
+            event::emit(
+                ev_sink.as_ref(),
                 "agent-waiting",
                 WaitingEvent {
                     id: ev_id.clone(),
@@ -255,7 +260,8 @@ impl SessionManager {
                 },
             );
             if rate_limited {
-                let _ = ev_app.emit(
+                event::emit(
+                    ev_sink.as_ref(),
                     "agent-rate-limited",
                     RateLimitEvent {
                         id: ev_id.clone(),
@@ -267,7 +273,8 @@ impl SessionManager {
                     },
                 );
             }
-            let _ = ev_app.emit(
+            event::emit(
+                ev_sink.as_ref(),
                 "pty-exit",
                 ExitEvent {
                     id: ev_id,
@@ -322,6 +329,17 @@ impl SessionManager {
             let _ = s.child.kill();
         }
         Ok(())
+    }
+
+    /// Current (rows, cols) of a session's pty — so a remote viewer (phone) can
+    /// size its terminal to match the shared pty instead of resizing it.
+    pub fn size(&self, id: &str) -> Option<(u16, u16)> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|s| s.master.get_size().ok())
+            .map(|sz| (sz.rows, sz.cols))
     }
 
     /// OS pid of a session's child process (the pty's shell/agent), if live.

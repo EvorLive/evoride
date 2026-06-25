@@ -1,6 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ProjectRail from "./components/ProjectRail";
 import AgentsColumn from "./components/AgentsColumn";
+import MobileWorkspace, { type MobileTab } from "./components/MobileWorkspace";
+import { useIsMobile } from "./lib/useIsMobile";
 import ProjectHome from "./components/ProjectHome";
 import JiraProjectPicker from "./components/JiraProjectPicker";
 import RunControl from "./components/RunControl";
@@ -27,9 +29,7 @@ const FileExplorer = lazy(() => import("./components/FileExplorer"));
 const GitPanel = lazy(() => import("./components/GitPanel"));
 const TasksPanel = lazy(() => import("./components/TasksPanel"));
 const EditsPanel = lazy(() => import("./components/EditsPanel"));
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrentWindow, listen, openUrl } from "./lib/bridge";
 import { midTruncate } from "./lib/util";
 import * as api from "./lib/tauri";
 import type {
@@ -91,6 +91,14 @@ export default function App() {
   // One right-side panel at a time (git/plan/files/edits), or none.
   type RightPanel = "git" | "plan" | "files" | "edits";
   const [rightPanel, setRightPanel] = useState<RightPanel | null>("git");
+  // On a phone (daemon-served web IDE) the project/agent rails collapse into
+  // off-canvas drawers; this tracks which one, if any, is open. No effect on
+  // desktop, where the rails are always visible.
+  const [mobileNav, setMobileNav] = useState<"none" | "projects" | "agents">("none");
+  // Phone layout: which bottom-nav tab is showing. Defaults to the terminal so
+  // you land on the active worker.
+  const isMobile = useIsMobile();
+  const [mobileTab, setMobileTab] = useState<MobileTab>("terminal");
   // Center shows the agent terminal or the file editor (never side by side).
   const [centerMode, setCenterMode] = useState<"terminal" | "editor">("terminal");
   const [services, setServices] = useState<Service[]>([]);
@@ -2044,6 +2052,9 @@ export default function App() {
             onSetGroupMembers={setGroupMembers}
           />
           <div className="home-col">
+          {/* Brand header — only shows on mobile, where the rail (which carries
+              the “Evor” mark on desktop) is hidden. */}
+          <div className="mob-brandbar">Evor</div>
           <SuperProjectBar
             superProjects={superProjects}
             projects={knownProjects}
@@ -2204,9 +2215,154 @@ export default function App() {
     );
   }
 
+  // --- Phone layout: terminal-first, bottom nav, project switcher in a drawer.
+  // Reuses the same child components (rail/agents/git/tasks/terminal) as desktop,
+  // just arranged for a small touch screen.
+  if (isMobile) {
+    return (
+      <div className="ide">
+        <Suspense fallback={<div className="mob" />}>
+          <MobileWorkspace
+            projectName={project.name}
+            activeTitle={activeIsLive ? (activeRec?.title ?? null) : null}
+            hasTerminal={!!(activeIsLive && activeAgentId)}
+            tab={mobileTab}
+            setTab={setMobileTab}
+            onSend={(raw) => {
+              if (activeAgentId) {
+                void api.writeInput(activeAgentId, raw);
+                clearWaiting(activeAgentId);
+              }
+            }}
+            launchOptions={enabledAgentClis}
+            onLaunch={(label, command) => {
+              setMobileTab("terminal");
+              void newAgent(label, command);
+            }}
+            projectRail={
+              <ProjectRail
+                projects={knownProjects}
+                activeId={project.id}
+                currentProjectId={project.id}
+                runningByProject={runningByProject}
+                waitingProjects={waitingProjects}
+                lastActivityByProject={lastActivityByProject}
+                superProjects={superProjects}
+                onSelect={(p) => {
+                  setProject(p);
+                  setView("workspace");
+                }}
+                onOpen={openFolder}
+                onHome={() => setView("home")}
+                onWorkspace={() => setView("grid")}
+                onCreateGroup={createGroupSeeded}
+                onSetGroupMembers={setGroupMembers}
+              />
+            }
+            agentsColumn={
+              <AgentsColumn
+                agents={activeAgents}
+                archived={archivedAgents}
+                live={live}
+                waiting={waitingAgents}
+                rateLimited={rateLimited}
+                states={agentState}
+                clis={enabledAgentClis}
+                activeAgentId={activeAgentId}
+                git={git}
+                sessions={continuableSessions}
+                editCounts={editCounts}
+                onSelect={(id) => {
+                  setCenterMode("terminal");
+                  setLiveIssue(null);
+                  setMobileTab("terminal");
+                  if (!live.has(id)) {
+                    void resumeExisting(id);
+                  } else {
+                    setDiffView(null);
+                    setActiveAgentId(id);
+                  }
+                }}
+                onNew={(...a) => {
+                  setMobileTab("terminal");
+                  return newAgent(...a);
+                }}
+                onResume={(rec) => {
+                  setMobileTab("terminal");
+                  resumeAgent(rec);
+                }}
+                onClose={closeAgent}
+                onArchive={archiveAgentH}
+                onDelete={deleteAgentH}
+                onUnarchive={(id) => {
+                  setMobileTab("terminal");
+                  void unarchiveAgentH(id);
+                }}
+                onContinueSession={(s) => {
+                  setMobileTab("terminal");
+                  continueSession(s);
+                }}
+                onRename={renameAgent}
+                onHome={goProjectHome}
+                homeActive={false}
+                projectName={project.name}
+              />
+            }
+            terminal={
+              activeIsLive && activeAgentId ? (
+                <AgentTerminal
+                  key={activeAgentId}
+                  id={activeAgentId}
+                  active
+                  mode={termMode}
+                  onInput={() => clearWaiting(activeAgentId)}
+                  onUrl={(url) =>
+                    setUrlByAgent((prev) =>
+                      prev[activeAgentId] === url
+                        ? prev
+                        : { ...prev, [activeAgentId]: url },
+                    )
+                  }
+                  onIssue={(context) => setLiveIssue({ id: activeAgentId, context })}
+                  onTitle={(title) => autoTitleAgent(activeAgentId, title)}
+                />
+              ) : null
+            }
+            changes={
+              <GitPanel
+                cwd={project.path}
+                git={git}
+                canAsk={activeIsLive}
+                onAskAgent={askCommitPush}
+                onRefreshStatus={refreshGitStatus}
+                onOpenDiff={(file) => setDiffView({ file })}
+                onBeforeCommit={beforeCommit}
+              />
+            }
+            tasks={
+              <TasksPanel
+                tasks={tasks}
+                onAdd={addTask}
+                onCycle={cycleTask}
+                onDelete={delTask}
+              />
+            }
+          />
+        </Suspense>
+        {palette}
+        {jiraPicker}
+      </div>
+    );
+  }
+
   return (
     <div className="ide">
       <div className="ide-main">
+        {/* Mobile-only: tap-out backdrop that closes whichever rail drawer is open. */}
+        {mobileNav !== "none" && (
+          <div className="drawer-backdrop" onClick={() => setMobileNav("none")} />
+        )}
+        <div className={`drawer prail-drawer ${mobileNav === "projects" ? "open" : ""}`}>
         <ProjectRail
           projects={knownProjects}
           activeId={project.id}
@@ -2218,6 +2374,7 @@ export default function App() {
           onSelect={(p) => {
             setProject(p);
             setView("workspace");
+            setMobileNav("none");
           }}
           onOpen={openFolder}
           onHome={() => setView("home")}
@@ -2225,6 +2382,8 @@ export default function App() {
           onCreateGroup={createGroupSeeded}
           onSetGroupMembers={setGroupMembers}
         />
+        </div>
+        <div className={`drawer rail-drawer ${mobileNav === "agents" ? "open" : ""}`}>
         <AgentsColumn
           agents={activeAgents}
           archived={archivedAgents}
@@ -2240,6 +2399,7 @@ export default function App() {
           onSelect={(id) => {
             setCenterMode("terminal");
             setLiveIssue(null);
+            setMobileNav("none");
             if (!live.has(id)) {
               // Clicking a stopped agent auto-resumes it in place.
               void resumeExisting(id);
@@ -2260,9 +2420,27 @@ export default function App() {
           homeActive={!activeAgentId && !diffView && !(centerMode === "editor" && openFiles.length > 0)}
           projectName={project.name}
         />
+        </div>
 
         <main className="main">
           <div className="topbar">
+            {/* Mobile-only rail toggles (hidden on desktop via CSS). */}
+            <button
+              className="tb-name mobile-only"
+              onClick={() => setMobileNav((n) => (n === "projects" ? "none" : "projects"))}
+              title="Projects"
+              aria-label="Projects"
+            >
+              ☰
+            </button>
+            <button
+              className="tb-name mobile-only"
+              onClick={() => setMobileNav((n) => (n === "agents" ? "none" : "agents"))}
+              title="Agents"
+              aria-label="Agents"
+            >
+              ⠿
+            </button>
             <div className="tb-project">
               <button
                 className="tb-name"

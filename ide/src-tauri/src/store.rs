@@ -119,6 +119,13 @@ impl Store {
         let conn = Connection::open(&db_path)
             .unwrap_or_else(|_| Connection::open_in_memory().expect("open in-memory sqlite"));
 
+        // WAL + a busy timeout let the desktop app and the `evor-daemon` (mobile
+        // access) safely share this file: WAL allows concurrent readers with a
+        // writer, and the timeout makes the rare write-write overlap retry
+        // instead of erroring with SQLITE_BUSY.
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+
         Self::init_schema(&conn);
 
         // One-time migration from the legacy JSON store, best-effort.

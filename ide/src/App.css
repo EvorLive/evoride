@@ -5362,3 +5362,374 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ============================================================
+   Responsive / mobile — for the daemon-served web IDE opened on
+   a phone. The DESKTOP layout is intentionally untouched: the
+   rail wrappers are `display: contents` (transparent to flex)
+   until the viewport is narrow, at which point they become
+   left-side off-canvas drawers toggled from the top bar.
+   ============================================================ */
+.mobile-only {
+  display: none;
+}
+.drawer {
+  display: contents;
+}
+.drawer-backdrop {
+  display: none;
+}
+
+@media (max-width: 820px) {
+  /* Show the two rail toggles in the top bar; let it wrap if cramped. */
+  .mobile-only {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  /* Project + agent rails slide in from the left, over the content. */
+  .drawer {
+    display: block;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 82%;
+    max-width: 300px;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    z-index: 60;
+    background: var(--bg);
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+  }
+  .drawer.open {
+    transform: translateX(0);
+  }
+  /* The rail fills the drawer regardless of its desktop fixed width. */
+  .drawer > * {
+    width: 100% !important;
+    height: 100%;
+  }
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 55;
+  }
+
+  /* Main content takes the whole width; stack the terminal above any
+     open side panel (files/git/edits/plan) instead of beside it. */
+  .ide-main {
+    position: relative;
+  }
+  .main {
+    width: 100%;
+    min-width: 0;
+  }
+  .main-body {
+    flex-direction: column;
+  }
+  .term-area {
+    width: 100%;
+    min-width: 0;
+  }
+  .term-slot {
+    width: 100% !important;
+  }
+  .main-body > :not(.term-area) {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* ============================================================
+   Mobile workspace — the phone-first layout (MobileWorkspace.tsx):
+   terminal-first, one tab at a time, bottom navigation, a command
+   bar to drive the active agent, project switcher in a drawer.
+   Only mounts when the viewport is narrow (useIsMobile === true).
+   ============================================================ */
+@media (max-width: 820px) {
+  .mob {
+    display: flex;
+    flex-direction: column;
+    /* Track the visual viewport (set by MobileWorkspace) so the on-screen
+       keyboard never hides the command bar; fall back to dynamic vh. */
+    height: var(--app-vh, 100dvh);
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* Let the terminal scroll with touch (xterm's own viewport). */
+  .mob-pane-term .xterm .xterm-viewport {
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
+  }
+
+  .mob-top {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .mob-burger {
+    font-size: 18px;
+    line-height: 1;
+    background: none;
+    border: none;
+    color: var(--fg);
+    padding: 4px 6px;
+    cursor: pointer;
+  }
+  .mob-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .mob-agent {
+    color: var(--fg-muted);
+    font-weight: 400;
+  }
+
+  /* Tab bodies: stacked, only the active one shown — terminal stays mounted. */
+  .mob-body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+  }
+  .mob-pane {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    overflow: auto;
+  }
+  .mob-pane.on {
+    display: flex;
+  }
+  /* The phone matches the shared pty's size (it doesn't resize it), so the
+     terminal may be wider/taller than the screen — let the pane pan/scroll, and
+     size the host to the terminal's natural dimensions instead of the viewport. */
+  .mob-pane-term {
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mob-pane-term > .term-host {
+    /* sized to the real terminal; AgentTerminal applies `zoom` to fit width */
+    width: max-content !important;
+    height: max-content !important;
+    padding: 4px !important;
+  }
+  .mob-pane > * {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100%;
+  }
+  .mob-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    height: 100%;
+    color: var(--fg-muted);
+  }
+
+  /* Command bar — drive the active agent without summoning the xterm keyboard. */
+  .mob-cmd {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .mob-keys {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+  }
+  .mob-keys button {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--fg);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .mob-cmd-row {
+    display: flex;
+    gap: 6px;
+  }
+  .mob-cmd-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+    color: var(--fg);
+    font-size: 16px; /* ≥16px stops iOS Safari auto-zoom on focus */
+  }
+
+  /* Bottom navigation. */
+  .mob-nav {
+    flex: 0 0 auto;
+    display: flex;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  .mob-nav button {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 0 6px;
+    background: none;
+    border: none;
+    color: var(--fg-muted);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .mob-nav button.on {
+    color: var(--brand);
+  }
+  .mob-nav-ic {
+    font-size: 15px;
+    line-height: 1;
+    font-family: var(--font-geist-mono, monospace);
+  }
+}
+
+/* ============================================================
+   Mobile: Home + Grid views. These aren't the MobileWorkspace
+   (that's its own component); they render the project rail + main
+   content side by side, which doesn't fit a phone. Drop the rail
+   (the Home dashboard already lists projects as tappable chips,
+   and the Grid is cross-project) and let the content fill width.
+   ============================================================ */
+@media (max-width: 820px) {
+  .ide-main > .prail {
+    display: none;
+  }
+  .home-col {
+    width: 100%;
+  }
+  /* Home content: tighter padding + chips/cards never overflow the viewport. */
+  .home {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .home * {
+    max-width: 100%;
+  }
+}
+
+/* Settings → Mobile: QR panel. White plate so the black QR scans even in dark
+   theme; fixed size for a reliable scan. */
+.mobile-qr {
+  background: #fff;
+  padding: 12px;
+  border-radius: 10px;
+  width: -moz-fit-content;
+  width: fit-content;
+  margin: 4px 0 14px;
+}
+.mobile-qr svg {
+  display: block;
+  width: 220px;
+  height: 220px;
+}
+
+/* Brand bar on mobile Home (desktop hides it; the rail carries the mark there). */
+.mob-brandbar {
+  display: none;
+}
+@media (max-width: 820px) {
+  .mob-brandbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px 2px;
+    font-weight: 700;
+    font-size: 17px;
+    letter-spacing: 0.2px;
+    color: var(--fg);
+  }
+
+  /* Home never scrolls sideways. */
+  .home-col,
+  .home {
+    overflow-x: hidden;
+  }
+
+  /* Task rows wrap their controls instead of overflowing the screen. */
+  .tc-main {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .tc-assign {
+    max-width: 100%;
+  }
+
+  /* Bottom bar (HomeBar/StatusBar): wrap + condense instead of running off-screen. */
+  .statusbar {
+    height: auto;
+    min-height: 26px;
+    flex-wrap: wrap;
+    row-gap: 3px;
+    padding: 5px 10px;
+  }
+  .status-left,
+  .status-right {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+/* Mobile terminal empty state: quick-launch agent buttons (no dead-end). */
+@media (max-width: 820px) {
+  .mob-empty-title {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--fg);
+  }
+  .mob-launch {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 280px;
+  }
+  .mob-launch .btn {
+    width: 100%;
+    padding: 12px;
+    font-size: 15px;
+  }
+  .mob-empty-more {
+    background: none;
+    border: none;
+    color: var(--brand);
+    font-size: 13px;
+    padding: 6px;
+    cursor: pointer;
+  }
+}
