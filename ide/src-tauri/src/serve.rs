@@ -33,10 +33,35 @@ pub struct Ctx<'a> {
     pub sink: &'a Sink,
 }
 
+/// Commands refused for ANY remote/relayed caller (daemon, mobile, cloud, CLI).
+/// `add_project` is the critical one — it registers an arbitrary host path as a
+/// project root, *widening* the `guard::confine` boundary that protects every
+/// other path command (CLAUDE.md guardrail #1). Opening a project happens only
+/// at the desktop, behind the OS folder picker. The rest are destructive
+/// project/group mutations that shouldn't be driven remotely.
+///
+/// Enforced here in the single dispatcher so it can't be bypassed by a transport
+/// that forgets to check (the desktop's own `#[tauri::command]`s don't go through
+/// `dispatch`, so they're unaffected).
+pub const REMOTE_DENIED: &[&str] = &[
+    "add_project",
+    "remove_project",
+    "create_super_project",
+    "rename_super_project",
+    "delete_super_project",
+    "set_super_project_members",
+];
+
 /// Map a command name + args to backend logic. Mirrors the desktop command
 /// surface; `args` keys are camelCase (matching the frontend `invoke` calls).
 pub fn dispatch(c: &Ctx, cmd: &str, a: &Value) -> Result<Value, String> {
     let ok = |v: Value| Ok(v);
+
+    // Refuse confinement-widening / destructive project ops for every remote
+    // caller — authoritative, regardless of which transport reached us.
+    if REMOTE_DENIED.contains(&cmd) {
+        return Err("this action is only available on the desktop app".into());
+    }
 
     match cmd {
         // --- projects ---

@@ -205,14 +205,9 @@ struct RpcReq {
 /// as allowed — i.e. it can *widen* the confinement boundary that protects every
 /// other path command. Opening a new project therefore happens only at the
 /// desktop, where the OS folder picker is the gate. (See CLAUDE.md guardrail #1.)
-const REMOTE_DENIED: &[&str] = &[
-    "add_project",            // "open new project" — would escape path confinement
-    "remove_project",         // destructive: drops a project + its agents/tasks
-    "create_super_project",
-    "rename_super_project",
-    "delete_super_project",
-    "set_super_project_members",
-];
+// The remote deny-list lives in `serve::REMOTE_DENIED` and is enforced inside
+// `serve::dispatch` for every transport; we pre-check here only to return a
+// nicer 403 before doing any work.
 
 /// One endpoint for the whole command surface: `{cmd, args}` → result. Mirrors
 /// the desktop `invoke()` contract so the frontend bridge is a thin swap.
@@ -224,7 +219,7 @@ async fn rpc(
     if !authed(&headers, &st.token) {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" }))).into_response();
     }
-    if REMOTE_DENIED.contains(&req.cmd.as_str()) {
+    if serve::REMOTE_DENIED.contains(&req.cmd.as_str()) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "ok": false, "error": "this action is only available on the desktop app" })),
