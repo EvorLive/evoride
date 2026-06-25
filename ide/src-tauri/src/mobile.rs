@@ -284,18 +284,23 @@ fn qr_svg(link: &str) -> String {
 
 /// The web bundle to serve: bundled resource (packaged) or `ide/dist` (dev).
 fn dist_dir(app: &AppHandle) -> Option<PathBuf> {
+    let has_index = |d: &std::path::Path| d.join("index.html").exists();
+
+    // Packaged: bundled via tauri.conf `bundle.resources` ("../dist" -> "dist").
     if let Ok(rd) = app.path().resource_dir() {
-        let d = rd.join("dist");
-        if d.join("index.html").exists() {
-            return Some(d);
+        for d in [rd.join("dist"), rd.join("_up_").join("dist"), rd.clone()] {
+            if has_index(&d) {
+                return Some(d);
+            }
         }
     }
+    // Dev: <…>/ide/dist relative to the running binary.
     if let Ok(exe) = std::env::current_exe() {
         for anc in exe.ancestors() {
             if anc.ends_with("src-tauri") {
                 if let Some(ide) = anc.parent() {
                     let d = ide.join("dist");
-                    if d.join("index.html").exists() {
+                    if has_index(&d) {
                         return Some(d);
                     }
                 }
