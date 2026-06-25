@@ -387,27 +387,96 @@ export default function AgentsColumn({
       )}
 
       {sessions.length > 0 && (
-        <div className="resume-section">
-          <div className="resume-head">Continue previous session</div>
-          <ul className="resume-list">
-            {sessions.map((s) => (
-              <li key={s.id}>
-                <button
-                  className="resume-item"
-                  onClick={() => onContinueSession(s)}
-                  title={s.summary}
-                >
-                  <span className="resume-title">{s.summary}</span>
-                  <span className="resume-meta">
-                    {s.model && <span className="resume-model">{s.model}</span>}
-                    <span>{fmtAgo(s.modified)} ago</span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <ResumeSection sessions={sessions} onContinueSession={onContinueSession} />
       )}
+    </div>
+  );
+}
+
+// Calendar-day bucket for a session's modified time. Order keeps groups recency-sorted.
+function dayBucket(unix: number): { order: number; label: string } {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const daysAgo = Math.floor((startOfToday - unix * 1000) / 86_400_000);
+  if (daysAgo <= 0) return { order: 0, label: "Today" };
+  if (daysAgo === 1) return { order: 1, label: "Yesterday" };
+  if (daysAgo < 7) return { order: 2, label: "Earlier this week" };
+  if (daysAgo < 14) return { order: 3, label: "Last week" };
+  if (daysAgo < 30) return { order: 4, label: "This month" };
+  return { order: 5, label: "Older" };
+}
+
+// "Continue previous session" list. Vertical-scroll only; adds a search box and
+// day grouping once the list grows past a handful of sessions.
+function ResumeSection({
+  sessions,
+  onContinueSession,
+}: {
+  sessions: ClaudeSession[];
+  onContinueSession: (s: ClaudeSession) => void;
+}) {
+  const [query, setQuery] = useState("");
+
+  const showSearch = sessions.length > 6;
+
+  const groups = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? sessions.filter(
+          (s) =>
+            s.summary.toLowerCase().includes(q) ||
+            (s.model ?? "").toLowerCase().includes(q),
+        )
+      : sessions;
+    const byLabel = new Map<string, { order: number; label: string; items: ClaudeSession[] }>();
+    for (const s of filtered) {
+      const b = dayBucket(s.modified);
+      let g = byLabel.get(b.label);
+      if (!g) byLabel.set(b.label, (g = { order: b.order, label: b.label, items: [] }));
+      g.items.push(s);
+    }
+    const out = [...byLabel.values()].sort((a, b) => a.order - b.order);
+    for (const g of out) g.items.sort((a, b) => b.modified - a.modified);
+    return out;
+  }, [sessions, query]);
+
+  return (
+    <div className="resume-section">
+      <div className="resume-head">Continue previous session</div>
+      {showSearch && (
+        <input
+          className="resume-search"
+          type="text"
+          placeholder="Search sessions…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      )}
+      <ul className="resume-list">
+        {groups.length === 0 && <li className="resume-empty">No matching sessions</li>}
+        {groups.map((g) => (
+          <li key={g.label}>
+            <div className="resume-group-head">{g.label}</div>
+            <ul className="resume-list" style={{ overflow: "visible", padding: 0 }}>
+              {g.items.map((s) => (
+                <li key={s.id}>
+                  <button
+                    className="resume-item"
+                    onClick={() => onContinueSession(s)}
+                    title={s.summary}
+                  >
+                    <span className="resume-title">{s.summary}</span>
+                    <span className="resume-meta">
+                      {s.model && <span className="resume-model">{s.model}</span>}
+                      <span>{fmtAgo(s.modified)} ago</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

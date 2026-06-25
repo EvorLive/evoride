@@ -3,6 +3,28 @@
 
 use serde::Serialize;
 use std::process::Command;
+use std::sync::Mutex;
+
+/// Serializes every git subprocess this backend spawns, so the IDE's own pollers
+/// (4 s status, 5 s changes, on-click diff) never race *each other* for a repo
+/// lock. External CLI git is handled separately: all read-only calls below run
+/// with `GIT_OPTIONAL_LOCKS=0` so they don't take `index.lock` to rewrite the
+/// refreshed index/untracked-cache — that's what used to collide with a
+/// concurrent CLI `git add`/`commit` and fail it with EEXIST. (This is exactly
+/// what VS Code's git extension does.)
+static GIT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Run a git subprocess under [`GIT_LOCK`]. When `read_only`, disable git's
+/// optional index locking so we never fight an external writer for `index.lock`.
+fn run(cwd: &str, args: &[&str], read_only: bool) -> std::io::Result<std::process::Output> {
+    let _guard = GIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    if read_only {
+        cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    }
+    cmd.output()
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GitStatus {
@@ -26,13 +48,10 @@ impl GitStatus {
     }
 }
 
+/// Read-only git query (status/branch/rev-list/…). Runs with optional locks
+/// disabled so it can't grab `index.lock` out from under a CLI writer.
 fn git(cwd: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
-        .ok()?;
+    let out = run(cwd, args, true).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -126,11 +145,9 @@ pub fn diff(cwd: &str, file: Option<&str>) -> String {
 }
 
 fn run_diff(cwd: &str, args: &[&str]) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
+    // Diff is read-only — disable optional locks so it never blocks/breaks a
+    // concurrent CLI git op refreshing the index.
+    run(cwd, args, true)
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default()
 }
@@ -210,14 +227,11 @@ pub fn push(cwd: &str) -> Result<String, String> {
     run_git(cwd, &["push"])
 }
 
-/// Run a git subcommand, returning stdout or an error containing stderr.
+/// Run a mutating git subcommand (checkout/commit/push/…), returning stdout or
+/// an error containing stderr. Keeps normal locking — these genuinely write —
+/// but still serializes through [`GIT_LOCK`] so two backend writers can't race.
 fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run(cwd, args, false).map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {

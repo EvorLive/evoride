@@ -94,6 +94,7 @@ fn lines_changed(paths: &[String], date: &str) -> (u64, u64, usize) {
     let until = format!("--until={date} 23:59:59");
     for p in paths {
         let out = Command::new("git")
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .arg("-C")
             .arg(p)
             .args(["log", &since, &until, "--numstat", "--pretty=tformat:"])
@@ -126,6 +127,7 @@ fn lines_changed(paths: &[String], date: &str) -> (u64, u64, usize) {
 fn uncommitted_changes(path: &str) -> (u64, u64) {
     let (mut add, mut del) = (0u64, 0u64);
     let out = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(path)
         .args(["diff", "--numstat", "HEAD"])
