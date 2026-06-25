@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+# The crate has two binaries (the app `ide` from src/main.rs and `evor-daemon`);
+# `tauri build` needs to know which is the app, hence default-run.
+default-run = "ide"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
