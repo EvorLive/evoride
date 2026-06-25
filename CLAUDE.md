@@ -94,6 +94,50 @@ EvorIDE is a Tauri desktop app: the webview calls ~84 Rust `#[tauri::command]`s 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <!-- evoride:edits:start -->
 ## Edit tracking (EvorIDE)
 After you create or modify a file, append ONE json line to the file at the path in the `$EVORIDE_EDITS` env var, recording what you changed:

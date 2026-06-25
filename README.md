@@ -13,7 +13,9 @@ blocked, and keep the **why** of your code next to the **what**.
 > **Why:** real agentic work means several agents, several repos, and constantly losing
 > track of which one is waiting on you. Evor makes that one glance.
 
-**[⬇ Download](../../releases)** · **[📖 Docs & getting started](https://evorlive.github.io/evoride/)** · macOS · Windows · Linux
+**[⬇ Download](../../releases)** · **[📖 Docs & getting started](https://evor.dev)** · macOS · Windows · Linux
+
+🆕 **New in [v0.1.9](https://github.com/EvorLive/evoride/releases/tag/v0.1.9): pause &amp; resume a whole project.** One button in the header tells every agent to save its progress, counts down, then interrupts them (Ctrl+C) and tears down services — `docker compose down` / `tilt down`, even stacks it detects running under a terminal. Hit ▶ Resume and it restarts the services and tells each agent to continue where it left off. Graceful shutdown → startup for your whole workspace.
 
 > ⚠️ **Early / alpha.** Actively built in the open. Things move fast and break.
 > Issues, ideas, and PRs are very welcome — this is meant to grow with its community.
@@ -78,6 +80,11 @@ and you can [add your own](#add-your-own-agent) in one file.
   (`.evoride/run.json`) to start/stop individual services. **Autopilot setup** (an agent
   configures the run for you, hands-free), per-service **View console**, services reuse the
   same terminal across restarts, and an open-in-browser button when a dev server prints a URL.
+- ⏸ **Pause / resume a project** *(new in v0.1.9)* — gracefully suspend everything in a
+  project from the header: agents are asked to save progress, given a 10s countdown, then
+  interrupted; services are torn down (`docker compose down` / `tilt down`, including stacks
+  detected running under a terminal). ▶ Resume restarts the services and tells agents to
+  continue. State is retained, so it survives an app restart.
 - ✅ **Tasks & daily planning** — per-project + cross-project task board, AI day-planner,
   architect breakdown into steps, and **AI duplicate detection** (merge / create-anyway when
   a task already exists). Agents can find their project's tasks via `$EVORIDE_PROJECT_TASKS`.
@@ -101,6 +108,25 @@ and you can [add your own](#add-your-own-agent) in one file.
 
 > Status: implemented and compiling. This is alpha software — expect rough edges and please
 > file what you find.
+
+---
+
+## Free vs. Evor Cloud
+
+**The desktop IDE is free and open source (MIT).** Everything above runs fully local — no
+account, no server, your code and terminals never leave your machine.
+
+**Evor Cloud** (optional, at **[evor.dev](https://evor.dev)**) is the hosted layer for when you
+want to step away from the desk:
+
+- 🔐 **Login & sync** your projects and agents across machines
+- 📲 **Remote control & notifications** — see what's *waiting for you* and reply from the web
+  dashboard or your phone, even while the desktop app runs elsewhere
+- 🛰 **Hosted dashboard** for live sessions
+
+Evor Cloud is free during beta and paid once it's stable. The IDE never gates local features
+behind it — Cloud only adds the away-from-keyboard pieces. Full docs live at
+**[evor.dev](https://evor.dev)**.
 
 ---
 
