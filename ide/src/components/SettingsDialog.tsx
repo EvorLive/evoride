@@ -211,14 +211,40 @@ function RemoteTab({ onChanged }: { onChanged?: () => void }) {
     }
   };
 
+  // One-click: open the browser, sign in, auto-provision the device token.
+  const connect = async () => {
+    setBusy(true);
+    note("");
+    try {
+      const c = await api.cloudLogin();
+      apply(await api.remoteStatus());
+      note(`Connected as ${c.device}.`);
+      onChanged?.();
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="set-section">
       <div className="set-section-title">Remote control</div>
-      <p className="set-row-hint" style={{ marginBottom: 14 }}>
+      <p className="set-row-hint" style={{ marginBottom: 12 }}>
         Push “agent is waiting for you” prompts to the Evor dashboard and answer
-        them from your phone or browser. In the dashboard open{" "}
-        <strong>Devices</strong>, add a device, then paste its server URL + token
-        here.
+        them from your phone or browser.
+      </p>
+
+      <button
+        className="btn primary"
+        onClick={() => void connect()}
+        disabled={busy}
+        style={{ marginBottom: 6 }}
+      >
+        {busy ? "Connecting…" : "Connect evor.dev"}
+      </button>
+      <p className="set-row-hint" style={{ marginBottom: 16 }}>
+        Opens your browser to sign in — no token to copy. Or connect manually below.
       </p>
 
       <Toggle

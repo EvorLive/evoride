@@ -1,31 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "./Markdown";
 import TaskCard from "./TaskCard";
+import AgentPreviewGrid from "./AgentPreviewGrid";
 import JiraIssuesDialog from "./JiraIssuesDialog";
 import * as api from "../lib/tauri";
 import * as demo from "../lib/demo";
 import type { AgentRecord, Project, Step, Task } from "../lib/tauri";
 import type { CliDef } from "../lib/clis";
-
-/* ---- inline icons (no emoji as structural icons) ---- */
-const Ic = {
-  bell: (
-    <svg viewBox="0 0 24 24" className="ic" aria-hidden="true">
-      <path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6" />
-      <path d="M10 20a2 2 0 0 0 4 0" />
-    </svg>
-  ),
-  check: (
-    <svg viewBox="0 0 24 24" className="ic" aria-hidden="true">
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
-  ),
-  arrow: (
-    <svg viewBox="0 0 24 24" className="ic" aria-hidden="true">
-      <path d="M5 12h14M13 6l6 6-6 6" />
-    </svg>
-  ),
-};
 
 function timeGreeting(): string {
   const h = new Date().getHours();
@@ -44,18 +25,13 @@ export default function HomeView({
   projects,
   runningList,
   waitingAgents,
-  waitingOptions,
-  waitingQuestion,
-  textModes,
   tasks,
   clis,
   canPlan = false,
+  termMode = "dark",
   onOpenProject,
   onOpenAgent,
   onAccept,
-  onYes,
-  onNo,
-  onPick,
   onAddTask,
   onCycleTask,
   onDeleteTask,
@@ -82,6 +58,8 @@ export default function HomeView({
   clis: CliDef[];
   /** Whether an AI helper (claude/codex) is available (planner + breakdown). */
   canPlan?: boolean;
+  /** Resolved IDE color mode for the terminal previews. */
+  termMode?: "light" | "dark";
   onOpenProject: (p: Project) => void;
   onOpenAgent: (agent: AgentRecord) => void;
   onAccept: (id: string) => void;
@@ -271,86 +249,26 @@ export default function HomeView({
           </div>
         )}
 
-        {/* Urgent when something needs you; calm when nothing does. */}
-        {waitingList.length > 0 ? (
-          <section className="home-alert" role="region" aria-label="Agents waiting for input">
-            <div className="home-alert-head">
-              <span className="home-alert-icon">{Ic.bell}</span>
-              <span>
-                {waitingList.length} agent{waitingList.length === 1 ? "" : "s"} need your input
-              </span>
-            </div>
-            <ul className="home-rows">
-              {waitingList.map((a) => {
-                const opts = waitingOptions[a.id] ?? [];
-                const question = waitingQuestion[a.id];
-                return (
-                  <li key={a.id} className={`home-wrow ${opts.length > 0 || question ? "menu" : ""}`}>
-                    <div className="home-wrow-meta">
-                      <span className="home-title">{a.title}</span>
-                      <span className="home-proj">{projectName(a.project_id)}</span>
-                      {question && <span className="home-question">“{question}”</span>}
-                    </div>
-                    {opts.length > 0 ? (
-                      <div className="home-actions home-choices">
-                        {opts.map((label, i) => (
-                          <button
-                            key={i}
-                            className={`btn ${i === 0 ? "primary" : "btn-ghost"} home-choice`}
-                            onClick={() => onPick(a.id, i + 1, label)}
-                            title={textModes[a.id] ? `Reply "${label}"` : `Send ${i + 1} + Enter`}
-                          >
-                            {!textModes[a.id] && <span className="home-choice-n">{i + 1}</span>}
-                            <span className="home-choice-label">{label}</span>
-                          </button>
-                        ))}
-                        <button className="btn-ghost" onClick={() => onOpenAgent(a)} title="Open in workspace">
-                          Open {Ic.arrow}
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="home-actions">
-                        <button className="btn primary" onClick={() => onAccept(a.id)} title="Send Enter">
-                          Accept
-                        </button>
-                        <button className="btn-ghost" onClick={() => onYes(a.id)} title="Send y + Enter">
-                          Yes
-                        </button>
-                        <button className="btn-ghost" onClick={() => onNo(a.id)} title="Send n + Enter">
-                          No
-                        </button>
-                        <button className="btn-ghost" onClick={() => onOpenAgent(a)} title="Open in workspace">
-                          Open {Ic.arrow}
-                        </button>
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        ) : (
-          <div className="home-allclear">
-            <span className="home-allclear-icon">{Ic.check}</span>
-            All caught up — no agents are waiting on you.
-          </div>
-        )}
-
-        {activeList.length > 0 && (
+        {runningList.length > 0 && (
           <section className="home-section">
             <h2 className="home-h2">Running agents</h2>
-            <ul className="home-rows">
-              {activeList.map((a) => (
-                <li key={a.id} className="home-arow">
-                  <span className="home-dot live" />
-                  <span className="home-title">{a.title}</span>
-                  <span className="home-proj">{projectName(a.project_id)}</span>
-                  <button className="btn-ghost home-arow-open" onClick={() => onOpenAgent(a)} title="Open in workspace">
-                    Open {Ic.arrow}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {/* Every running agent across all projects, as live terminal
+                thumbnails in one place — waiting first. Click opens the agent's
+                full page; a waiting one gets a Continue button. */}
+            <AgentPreviewGrid
+              agents={[...waitingList, ...activeList].map((a) => ({
+                id: a.id,
+                title: a.title,
+                waiting: waitingAgents.has(a.id),
+                projectName: projectName(a.project_id),
+              }))}
+              termMode={termMode}
+              onOpen={(id) => {
+                const a = runningList.find((x) => x.id === id);
+                if (a) onOpenAgent(a);
+              }}
+              onContinue={onAccept}
+            />
           </section>
         )}
 

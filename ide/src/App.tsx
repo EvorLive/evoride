@@ -2092,6 +2092,7 @@ export default function App() {
       tasks={homeTasks}
       clis={enabledAgentClis}
       canPlan={hasJudge}
+      termMode={termMode}
       onOpenProject={openProjectFromHome}
       onOpenAgent={openAgentFromHome}
       onAccept={acceptAgent}
@@ -2907,10 +2908,12 @@ export default function App() {
                     tasks={tasks}
                     clis={enabledAgentClis}
                     agentsWorking={projectAgentsWorking}
+                    termMode={termMode}
                     onOpenAgent={(id) => {
                       setDiffView(null);
                       setActiveAgentId(id);
                     }}
+                    onContinue={(id) => acceptAgent(id)}
                     onAdd={addTask}
                     onCycle={cycleTask}
                     onDelete={(t) => delTask(t.id)}

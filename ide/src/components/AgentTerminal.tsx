@@ -127,15 +127,23 @@ export default function AgentTerminal({
   id,
   active,
   mode,
+  preview,
   onUrl,
   onIssue,
   onInput,
   onTitle,
+  onOutput,
 }: {
   id: string;
   active: boolean;
   /** Resolved IDE color mode so the terminal matches it. */
   mode: "light" | "dark";
+  /** Read-only thumbnail: render the live pty scaled to fit a small tile WITHOUT
+   *  resizing the shared pty (so a 100px preview can't reflow the real agent). */
+  preview?: boolean;
+  /** Fires whenever live output arrives — drives an "is it doing something"
+   *  activity indicator without re-classifying the content. */
+  onOutput?: () => void;
   onUrl?: (url: string) => void;
   /** Fires (with recent output) when a failure signature appears live. */
   onIssue?: (context: string) => void;
@@ -156,6 +164,8 @@ export default function AgentTerminal({
   onIssueRef.current = onIssue;
   const onInputRef = useRef(onInput);
   onInputRef.current = onInput;
+  const onOutputRef = useRef(onOutput);
+  onOutputRef.current = onOutput;
 
   // Right-click context menu (viewport coords + whether there's a selection).
   const [menu, setMenu] = useState<{ x: number; y: number; hasSel: boolean } | null>(null);
@@ -266,8 +276,9 @@ export default function AgentTerminal({
 
     // On a phone (remote browser) we don't own the pty: match its size so the
     // rendering is identical to the desktop, and let the pane scroll/zoom. On
-    // desktop we fit the pty to the tile.
-    const remote = !isTauri();
+    // desktop we fit the pty to the tile. A `preview` thumbnail behaves the same
+    // way (zoom-to-fit, never resize the shared pty) even on desktop.
+    const remote = !isTauri() || preview;
 
     // Size the xterm to the shared pty (remote viewer only).
     const matchPty = () =>
@@ -330,6 +341,7 @@ export default function AgentTerminal({
         if (disposed) return;
         onAgentOutput(id, (bytes) => {
           term.write(bytes);
+          onOutputRef.current?.();
           if (!onUrlRef.current && !onIssueRef.current) return;
           const clean = decoder
             .decode(bytes, { stream: true })
@@ -365,7 +377,7 @@ export default function AgentTerminal({
     // repaint the existing buffer in this webview, so we recreate with the correct
     // theme at construction (scrollback is restored from the backend above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, mode]);
+  }, [id, mode, preview]);
 
   // When this tile becomes active (shown), it finally has width — refit so the
   // pty matches the real column count.

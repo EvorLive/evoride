@@ -497,6 +497,12 @@ export interface CloudPairing {
   device: string;
   qr_svg: string;
 }
+export interface Connected {
+  device: string;
+  url: string;
+}
+/** One-click login: opens the browser, auto-provisions the device token. */
+export const cloudLogin = () => invoke<Connected>("cloud_login");
 export const cloudStatus = () => invoke<CloudStatus>("cloud_status");
 /** Dial out to the evor.dev relay (uses the Settings → Remote device token). */
 export const cloudStart = () => invoke<CloudStatus>("cloud_start");

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { GitStatus, Project, Step, Task } from "../lib/tauri";
 import type { CliDef } from "../lib/clis";
 import TaskCard from "./TaskCard";
+import AgentPreviewGrid from "./AgentPreviewGrid";
 
 // Doing first (in-flight), then todo, then done — an at-a-glance work queue.
 const ORDER: Record<Task["status"], number> = { doing: 0, todo: 1, done: 2, verified: 3 };
@@ -15,7 +16,9 @@ export default function ProjectHome({
   tasks,
   clis,
   agentsWorking = [],
+  termMode = "dark",
   onOpenAgent,
+  onContinue,
   onAdd,
   onCycle,
   onDelete,
@@ -34,8 +37,12 @@ export default function ProjectHome({
   clis: CliDef[];
   /** Agents currently live in THIS project (most-recent first). */
   agentsWorking?: { id: string; title: string; waiting: boolean }[];
-  /** Focus an agent's terminal. */
+  /** Resolved IDE color mode for the terminal previews. */
+  termMode?: "light" | "dark";
+  /** Focus an agent's terminal (the main agent page). */
   onOpenAgent?: (id: string) => void;
+  /** Nudge a waiting agent to keep going (accepts its current prompt). */
+  onContinue?: (id: string) => void;
   onAdd: (title: string) => void;
   onCycle: (t: Task) => void;
   onDelete: (t: Task) => void;
@@ -101,23 +108,14 @@ export default function ProjectHome({
         {agentsWorking.length > 0 && (
           <section className="phome-working">
             <h2>Working now</h2>
-            <ul className="phome-working-list">
-              {agentsWorking.map((a) => (
-                <li key={a.id}>
-                  <button
-                    className="phome-working-item"
-                    onClick={() => onOpenAgent?.(a.id)}
-                    title="Open this agent’s terminal"
-                  >
-                    <span className={`dot ${a.waiting ? "dot-wait" : "dot-live"}`} />
-                    <span className="phome-working-title">{a.title}</span>
-                    <span className="phome-working-state">
-                      {a.waiting ? "waiting for input" : "working"}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {/* A live terminal thumbnail per running agent: click anywhere to jump
+                to its full page; a waiting agent gets a highlight + Continue. */}
+            <AgentPreviewGrid
+              agents={agentsWorking}
+              termMode={termMode}
+              onOpen={(id) => onOpenAgent?.(id)}
+              onContinue={onContinue}
+            />
           </section>
         )}
 

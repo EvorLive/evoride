@@ -9,6 +9,7 @@
 // between the desktop app and the daemon.
 pub mod claude;
 pub mod cloud;
+pub mod connect;
 pub mod edits;
 pub mod event;
 pub mod fs;
@@ -1725,6 +1726,15 @@ fn cloud_pairing(app: AppHandle) -> Result<cloud::CloudPairing, String> {
     cloud::pairing(&app)
 }
 
+/// One-click "Connect evor.dev": browser loopback login that auto-provisions the
+/// device token (no manual paste). Blocking — runs on a command worker.
+#[tauri::command]
+async fn cloud_login(app: AppHandle) -> Result<connect::Connected, String> {
+    tauri::async_runtime::spawn_blocking(move || connect::login(&app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 // --- skills ---
 
 /// Bundled skills with their current enabled state, for Settings → Skills.
@@ -2113,6 +2123,7 @@ pub fn run() {
             cloud_start,
             cloud_stop,
             cloud_pairing,
+            cloud_login,
             list_skills,
             set_skill_enabled,
             remove_skill,

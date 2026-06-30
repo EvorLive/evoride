@@ -2608,8 +2608,42 @@ body {
   border-radius: 8px;
   overflow: hidden;
 }
-.phome-preview.waiting {
-  border-color: color-mix(in srgb, var(--wait, #f5b301) 55%, var(--border));
+/* Tile accent by activity: amber when it needs you, green when actively
+   producing output, neutral when live-but-idle (not working). */
+.phome-preview.halted {
+  border-color: color-mix(in srgb, var(--wait, #f5b301) 60%, var(--border));
+}
+.phome-preview.working {
+  border-color: color-mix(in srgb, var(--live) 45%, var(--border));
+}
+
+/* Activity dot: pulsing green = working, steady amber = halted, grey = idle. */
+.activity-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+}
+.activity-dot.working {
+  background: var(--live);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 70%, transparent);
+  animation: activity-pulse 1.6s ease-out infinite;
+}
+.activity-dot.halted {
+  background: var(--wait, #f5b301);
+}
+.activity-dot.idle {
+  background: var(--fg-subtle);
+  opacity: 0.55;
+}
+@keyframes activity-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 60%, transparent); }
+  70% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--live) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-dot.working { animation: none; }
 }
 .phome-preview-head {
   display: flex;
@@ -2640,6 +2674,13 @@ body {
   flex-shrink: 0;
   font-size: 10.5px;
   color: var(--fg-subtle);
+}
+.phome-preview-state.working {
+  color: color-mix(in srgb, var(--live) 70%, var(--fg));
+}
+.phome-preview-state.halted {
+  color: color-mix(in srgb, var(--wait, #f5b301) 65%, var(--fg));
+  font-weight: 600;
 }
 .phome-preview-continue {
   flex-shrink: 0;
