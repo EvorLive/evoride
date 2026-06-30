@@ -19,6 +19,7 @@ pub mod jira;
 pub mod judge;
 pub mod localrpc;
 pub mod mobile;
+pub mod notify;
 pub mod pause;
 pub mod proctree;
 mod remote;
@@ -1921,6 +1922,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(SessionManager::new())
         .manage(GitLock::default())
         .manage(JudgeCache::default())
@@ -1941,6 +1943,10 @@ pub fn run() {
             // fresh install getting the default-on skills on first launch.
             skills::sync(&settings_store.skills_disabled());
             app.manage(settings_store);
+
+            // Ask once for OS-notification permission so "agent needs you" /
+            // "agent finished" can surface even when Evor isn't focused.
+            notify::request_permission(app.handle());
 
             // Background poller that applies replies made from the hosted
             // dashboard into the local agent ptys (no-op when remote is off).

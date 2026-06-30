@@ -140,16 +140,22 @@ export default function ProjectRail({
   const renderRow = (p: Project, opts?: { inGroup?: string }) => {
     const running = runningByProject[p.id] ?? 0;
     const waiting = waitingProjects.has(p.id);
+    const isCurrent = p.id === currentProjectId;
     const age = fmtAge(ageOf(p.id));
+    // Dot reflects what's true RIGHT NOW: needs-you > running > the one you're
+    // viewing > idle. The "current" state matters because the open project lives
+    // in the Active section even with no live agent — without it, the project you
+    // just opened would render with the same dead-grey dot as everything dormant.
+    const dot = waiting ? "wait" : running > 0 ? "live" : isCurrent ? "current" : "idle";
     return (
       <button
         className={`prail-item ${p.id === activeId ? "active" : ""}`}
         onClick={() => onSelect(p)}
         title={`${p.path}${running ? ` · ${running} running` : ""}${
-          waiting ? " · waiting for input" : ""
+          waiting ? " · waiting for input" : isCurrent ? " · open" : ""
         }${age ? ` · worked ${age} ago` : ""}`}
       >
-        <span className={`prail-dot ${waiting ? "wait" : running > 0 ? "live" : "idle"}`} />
+        <span className={`prail-dot ${dot}`} />
         <span className="prail-name">{p.name}</span>
         {running > 0 && <span className="prail-count">{running}</span>}
         {waiting && <span className="prail-bell">●</span>}

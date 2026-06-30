@@ -175,6 +175,13 @@ body {
   background: var(--warn);
   box-shadow: 0 0 6px var(--warn);
 }
+/* The project you're currently viewing: not "working" (no live agent) but not
+   dormant either — a hollow brand ring so it reads as active/selected, never as
+   the dead-grey idle dot. */
+.prail-dot.current {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--brand);
+}
 .prail-count {
   font-size: 10px;
   color: var(--fg-subtle);
@@ -1622,6 +1629,9 @@ body {
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
+  /* Reserve the top-right corner for the floating notification bell so the
+     rightmost action never ends up underneath it. */
+  padding-right: 58px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
@@ -2579,6 +2589,92 @@ body {
   flex-shrink: 0;
   font-size: 11px;
   color: var(--fg-subtle);
+}
+
+/* Live terminal thumbnails — two per row (≈50% width each). */
+.phome-previews {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 620px) {
+  .phome-previews { grid-template-columns: 1fr; }
+}
+.phome-preview {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.phome-preview.waiting {
+  border-color: color-mix(in srgb, var(--wait, #f5b301) 55%, var(--border));
+}
+.phome-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border);
+}
+.phome-preview-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.phome-preview-proj {
+  flex-shrink: 0;
+  max-width: 38%;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.phome-preview-state {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--fg-subtle);
+}
+.phome-preview-continue {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--live) 45%, var(--border));
+  background: color-mix(in srgb, var(--live) 14%, transparent);
+  color: var(--fg);
+  cursor: pointer;
+}
+.phome-preview-continue:hover {
+  background: color-mix(in srgb, var(--live) 26%, transparent);
+}
+/* The terminal thumbnail: fixed ~100px tall, click-through to the full page. */
+.phome-preview-term {
+  position: relative;
+  height: 100px;
+  overflow: hidden;
+}
+.phome-preview-term .term-host {
+  height: 100%;
+}
+.phome-preview-open {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.phome-preview-open:hover {
+  background: color-mix(in srgb, var(--live) 8%, transparent);
 }
 .phome-tasks-head {
   display: flex;
@@ -5190,8 +5286,8 @@ body {
 /* --- Global notification center (toasts + inbox bell) --- */
 .notif-root {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  right: 14px;
+  top: 7px; /* sits in the title strip, near the project header — easy to reach */
   z-index: 9000;
   display: flex;
   flex-direction: column;
@@ -5299,12 +5395,12 @@ body {
   justify-content: center;
 }
 
-/* Inbox dropdown */
+/* Inbox dropdown — opens downward from the top-anchored bell. */
 .notif-inbox {
   pointer-events: auto;
   position: absolute;
   right: 0;
-  bottom: 46px;
+  top: 46px;
   width: 340px;
   max-height: 60vh;
   display: flex;

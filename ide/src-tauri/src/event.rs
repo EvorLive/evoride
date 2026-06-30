@@ -44,6 +44,11 @@ impl EventSink for TauriSink {
         // Emit the Value as-is so the webview receives the object (not a
         // JSON-encoded string); the frontend reads `ev.payload.<field>`.
         let _ = self.0.emit(topic, payload.clone());
+        // Surface "needs you" / "finished" as a real OS notification when Evor
+        // isn't focused — the in-app toast only helps when a window is on screen.
+        if matches!(topic, "agent-waiting" | "pty-exit") {
+            crate::notify::agent_event(&self.0, topic, &payload);
+        }
         // Tee to any phones connected via "Mobile access" so a terminal opened
         // on the desktop streams to mobile too (same live agent on both).
         if let Some(m) = self.0.try_state::<crate::mobile::MobileState>() {

@@ -195,33 +195,9 @@ export default function NotificationCenter({
 
   return (
     <div className="notif-root">
-      {/* Toast stack */}
-      <div className="notif-toasts">
-        {visibleToasts.map((n) => (
-          <button key={n.key} className={`notif-toast kind-${n.kind}`} onClick={() => jump(n)}>
-            <i className={`codicon ${KIND_META[n.kind].icon} notif-icon`} />
-            <span className="notif-toast-body">
-              <span className="notif-toast-title">{n.agent.title}</span>
-              <span className="notif-toast-sub">
-                {KIND_META[n.kind].label} · {n.projectName}
-              </span>
-              {n.question && <span className="notif-toast-q">{n.question}</span>}
-            </span>
-            <span
-              className="notif-x"
-              title="Dismiss"
-              onClick={(e) => {
-                e.stopPropagation();
-                dismiss(n.key);
-              }}
-            >
-              <i className="codicon codicon-close" />
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {/* Bell + inbox */}
+      {/* Bell + inbox (top-anchored so it sits in the title strip, not buried in
+          a far corner). Rendered before the toasts so the stack cascades down
+          beneath it. */}
       <div className="notif-bell-wrap">
         {open && (
           <div className="notif-inbox" onMouseDown={(e) => e.stopPropagation()}>
@@ -271,6 +247,32 @@ export default function NotificationCenter({
           <i className="codicon codicon-bell" />
           {unread > 0 && <span className="notif-badge">{unread > 9 ? "9+" : unread}</span>}
         </button>
+      </div>
+
+      {/* Toast stack */}
+      <div className="notif-toasts">
+        {visibleToasts.map((n) => (
+          <button key={n.key} className={`notif-toast kind-${n.kind}`} onClick={() => jump(n)}>
+            <i className={`codicon ${KIND_META[n.kind].icon} notif-icon`} />
+            <span className="notif-toast-body">
+              <span className="notif-toast-title">{n.agent.title}</span>
+              <span className="notif-toast-sub">
+                {KIND_META[n.kind].label} · {n.projectName}
+              </span>
+              {n.question && <span className="notif-toast-q">{n.question}</span>}
+            </span>
+            <span
+              className="notif-x"
+              title="Dismiss"
+              onClick={(e) => {
+                e.stopPropagation();
+                dismiss(n.key);
+              }}
+            >
+              <i className="codicon codicon-close" />
+            </span>
+          </button>
+        ))}
       </div>
     </div>
   );
