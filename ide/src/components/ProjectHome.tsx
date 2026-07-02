@@ -19,6 +19,7 @@ export default function ProjectHome({
   termMode = "dark",
   onOpenAgent,
   onContinue,
+  onPick,
   onAdd,
   onCycle,
   onDelete,
@@ -36,13 +37,22 @@ export default function ProjectHome({
   /** Enabled launchable CLIs (incl. shell). */
   clis: CliDef[];
   /** Agents currently live in THIS project (most-recent first). */
-  agentsWorking?: { id: string; title: string; waiting: boolean }[];
+  agentsWorking?: {
+    id: string;
+    title: string;
+    waiting: boolean;
+    options?: string[];
+    question?: string;
+    textMode?: boolean;
+  }[];
   /** Resolved IDE color mode for the terminal previews. */
   termMode?: "light" | "dark";
   /** Focus an agent's terminal (the main agent page). */
   onOpenAgent?: (id: string) => void;
   /** Nudge a waiting agent to keep going (accepts its current prompt). */
   onContinue?: (id: string) => void;
+  /** Pick a waiting agent's numbered choice (1-based) by its label. */
+  onPick?: (id: string, n: number, label: string) => void;
   onAdd: (title: string) => void;
   onCycle: (t: Task) => void;
   onDelete: (t: Task) => void;
@@ -115,6 +125,7 @@ export default function ProjectHome({
               termMode={termMode}
               onOpen={(id) => onOpenAgent?.(id)}
               onContinue={onContinue}
+              onPick={onPick}
             />
           </section>
         )}

@@ -25,6 +25,9 @@ export default function HomeView({
   projects,
   runningList,
   waitingAgents,
+  waitingOptions,
+  waitingQuestion,
+  textModes,
   tasks,
   clis,
   canPlan = false,
@@ -32,6 +35,9 @@ export default function HomeView({
   onOpenProject,
   onOpenAgent,
   onAccept,
+  onYes,
+  onNo,
+  onPick,
   onAddTask,
   onCycleTask,
   onDeleteTask,
@@ -148,9 +154,35 @@ export default function HomeView({
     );
   }, [tasks]);
 
+  // One task row — reused by the Home preview (first few) and the "view all"
+  // dialog, so they stay identical.
+  const taskCard = (t: Task) => (
+    <TaskCard
+      key={t.id}
+      task={t}
+      projects={projects}
+      agentCommand={t.project_id ? agentCommand : undefined}
+      agentLabel={agentLabel}
+      showProject
+      projectName={t.project_id ? projectName(t.project_id) : "Unassigned"}
+      onCycle={onCycleTask}
+      onDelete={(x) => onDeleteTask(x.id)}
+      onSetDescription={onSetDescription}
+      onBreakdown={onBreakdown}
+      onToggleStep={onToggleStep}
+      onWork={onWorkTask}
+      onBrainstorm={onBrainstormTask}
+      onAssign={!t.project_id ? onAssignTask : undefined}
+      onPushJira={t.project_id ? onPushJira : undefined}
+    />
+  );
+
   // Quick-add + AI planner state.
   const [draft, setDraft] = useState("");
   const [draftProject, setDraftProject] = useState("");
+  // Home shows the first few tasks; the rest open in a "view all" dialog.
+  const [tasksAllOpen, setTasksAllOpen] = useState(false);
+  const TASK_PREVIEW = 5;
   const [note, setNote] = useState("");
   const [planning, setPlanning] = useState(false);
   const [planMsg, setPlanMsg] = useState("");
@@ -260,14 +292,25 @@ export default function HomeView({
                 id: a.id,
                 title: a.title,
                 waiting: waitingAgents.has(a.id),
+                projectId: a.project_id,
                 projectName: projectName(a.project_id),
+                options: waitingOptions[a.id] ?? [],
+                question: waitingQuestion[a.id],
+                textMode: textModes[a.id] ?? false,
               }))}
               termMode={termMode}
               onOpen={(id) => {
                 const a = runningList.find((x) => x.id === id);
                 if (a) onOpenAgent(a);
               }}
+              onOpenProject={(pid) => {
+                const p = projects.find((x) => x.id === pid);
+                if (p) onOpenProject(p);
+              }}
               onContinue={onAccept}
+              onYes={onYes}
+              onNo={onNo}
+              onPick={onPick}
             />
           </section>
         )}
@@ -372,30 +415,33 @@ export default function HomeView({
           {visibleTasks.length === 0 ? (
             <p className="home-empty">No open tasks. Add one above or brain-dump with AI.</p>
           ) : (
-            <ul className="tc-list">
-              {visibleTasks.map((t) => (
-                <TaskCard
-                  key={t.id}
-                  task={t}
-                  projects={projects}
-                  agentCommand={t.project_id ? agentCommand : undefined}
-                  agentLabel={agentLabel}
-                  showProject
-                  projectName={t.project_id ? projectName(t.project_id) : "Unassigned"}
-                  onCycle={onCycleTask}
-                  onDelete={(x) => onDeleteTask(x.id)}
-                  onSetDescription={onSetDescription}
-                  onBreakdown={onBreakdown}
-                  onToggleStep={onToggleStep}
-                  onWork={onWorkTask}
-                  onBrainstorm={onBrainstormTask}
-                  onAssign={!t.project_id ? onAssignTask : undefined}
-                  onPushJira={t.project_id ? onPushJira : undefined}
-                />
-              ))}
-            </ul>
+            <>
+              <ul className="tc-list">
+                {visibleTasks.slice(0, TASK_PREVIEW).map(taskCard)}
+              </ul>
+              {visibleTasks.length > TASK_PREVIEW && (
+                <button className="jira-seeall" onClick={() => setTasksAllOpen(true)}>
+                  View all {visibleTasks.length} tasks →
+                </button>
+              )}
+            </>
           )}
         </section>
+
+        {/* All tasks, in a dialog. */}
+        {tasksAllOpen && (
+          <div className="set-overlay" onClick={() => setTasksAllOpen(false)} role="dialog" aria-modal="true">
+            <div className="set-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="set-head">
+                <span className="set-title">All tasks ({visibleTasks.length})</span>
+                <button className="set-x" onClick={() => setTasksAllOpen(false)} aria-label="Close">✕</button>
+              </div>
+              <div className="set-body">
+                <ul className="tc-list">{visibleTasks.map(taskCard)}</ul>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Periodic AI recap of the day (auto-refreshed). */}
         <section className="home-section">

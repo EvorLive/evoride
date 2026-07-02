@@ -34,6 +34,8 @@ pub struct GitStatus {
     pub dirty: u32,
     pub ahead: u32,
     pub behind: u32,
+    /// Detached HEAD: `branch` holds the short commit SHA, not a ref name.
+    pub detached: bool,
 }
 
 impl GitStatus {
@@ -44,6 +46,7 @@ impl GitStatus {
             dirty: 0,
             ahead: 0,
             behind: 0,
+            detached: false,
         }
     }
 }
@@ -61,10 +64,17 @@ fn git(cwd: &str, args: &[&str]) -> Option<String> {
 /// Read a compact git status for `cwd`. Never errors — returns a non-repo
 /// status if the directory isn't under git.
 pub fn status(cwd: &str) -> GitStatus {
-    let branch = match git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+    let mut branch = match git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]) {
         Some(b) => b,
         None => return GitStatus::not_repo(),
     };
+
+    // Detached HEAD: `--abbrev-ref` yields the literal "HEAD". Show the short
+    // SHA instead so the status bar doesn't present "HEAD" as a branch name.
+    let detached = branch == "HEAD";
+    if detached {
+        branch = git(cwd, &["rev-parse", "--short", "HEAD"]).unwrap_or(branch);
+    }
 
     let dirty = git(cwd, &["status", "--porcelain"])
         .map(|s| s.lines().filter(|l| !l.is_empty()).count() as u32)
@@ -86,6 +96,7 @@ pub fn status(cwd: &str) -> GitStatus {
         dirty,
         ahead,
         behind,
+        detached,
     }
 }
 
@@ -160,12 +171,15 @@ pub struct Branches {
 
 /// Local branches with the current one flagged.
 pub fn branches(cwd: &str) -> Branches {
-    let current = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let current = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .filter(|b| b != "HEAD") // detached: no current branch
+        .unwrap_or_default();
     let all = git(cwd, &["branch", "--format=%(refname:short)"])
         .map(|s| {
             s.lines()
                 .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
+                // Drop the "(HEAD detached at …)" placeholder git emits when detached.
+                .filter(|l| !l.is_empty() && !l.starts_with('('))
                 .collect()
         })
         .unwrap_or_default();
@@ -200,16 +214,27 @@ pub fn create_branch(cwd: &str, name: &str) -> Result<String, String> {
     run_git(cwd, &["checkout", "-b", name])
 }
 
-/// Stage everything, commit with `message`, and push. Returns combined output
-/// or the first failing step's error.
-pub fn commit_and_push(cwd: &str, message: &str) -> Result<String, String> {
+/// Stage everything and commit with `message` — no push, so a network/auth
+/// failure can't strand the user mid-operation.
+pub fn commit(cwd: &str, message: &str) -> Result<String, String> {
     if message.trim().is_empty() {
         return Err("commit message is empty".into());
     }
     run_git(cwd, &["add", "-A"])?;
-    let commit = run_git(cwd, &["commit", "-m", message])?;
-    let push = run_git(cwd, &["push"])?;
-    Ok(format!("{commit}\n{push}").trim().to_string())
+    run_git(cwd, &["commit", "-m", message])
+}
+
+/// Stage everything, commit with `message`, and push. If the push fails the
+/// error says so explicitly — the commit already exists locally and must not
+/// look like it was lost.
+pub fn commit_and_push(cwd: &str, message: &str) -> Result<String, String> {
+    let committed = commit(cwd, message)?;
+    match push(cwd) {
+        Ok(pushed) => Ok(format!("{committed}\n{pushed}").trim().to_string()),
+        Err(e) => Err(format!(
+            "Committed locally, but the push failed — your commit is safe; push again when resolved.\n{e}"
+        )),
+    }
 }
 
 /// Fetch remote refs so ahead/behind reflects the latest remote state.
@@ -222,9 +247,21 @@ pub fn pull(cwd: &str) -> Result<String, String> {
     run_git(cwd, &["pull", "--no-edit"])
 }
 
-/// Push the current branch.
+/// Push the current branch. A branch with no upstream yet (fresh `checkout -b`)
+/// is pushed with `-u origin <branch>` so the first push just works and
+/// ahead/behind starts tracking. The branch name comes from git itself (git
+/// refuses to create refs starting with `-`), so it can't be an option.
 pub fn push(cwd: &str) -> Result<String, String> {
-    run_git(cwd, &["push"])
+    let has_upstream = git(cwd, &["rev-parse", "--abbrev-ref", "@{u}"]).is_some();
+    if has_upstream {
+        return run_git(cwd, &["push"]);
+    }
+    match git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        Some(branch) if branch != "HEAD" => {
+            run_git(cwd, &["push", "-u", "origin", branch.as_str()])
+        }
+        _ => run_git(cwd, &["push"]), // detached/unknown — let git explain
+    }
 }
 
 /// Run a mutating git subcommand (checkout/commit/push/…), returning stdout or

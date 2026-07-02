@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   gitChanges,
+  gitCommit,
   gitCommitPush,
   gitFetch,
   gitPull,
@@ -27,6 +28,7 @@ export default function GitPanel({
   onRefreshStatus,
   onOpenDiff,
   onBeforeCommit,
+  refreshSignal,
 }: {
   cwd: string;
   git: GitStatus | null;
@@ -35,6 +37,8 @@ export default function GitPanel({
   onRefreshStatus: () => void;
   onOpenDiff: (file: string | null) => void;
   onBeforeCommit?: () => Promise<void>;
+  /** Bumped by the app when the FS watcher sees changes — triggers a refresh. */
+  refreshSignal?: number;
 }) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [message, setMessage] = useState("");
@@ -46,11 +50,14 @@ export default function GitPanel({
     gitChanges(cwd).then(setChanges).catch(() => {});
   }, [cwd]);
 
+  // The FS watcher (refreshSignal) delivers instant updates for working-tree
+  // edits, so the fallback poll only needs to catch what it can't see
+  // (.git-only changes like CLI commits) — 10s is plenty.
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 5000);
+    const t = setInterval(() => !document.hidden && refresh(), 10000);
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [refresh, refreshSignal]);
 
   // Fetch periodically so behind/ahead reflects the remote, then re-poll status.
   useEffect(() => {
@@ -76,9 +83,12 @@ export default function GitPanel({
     }
   };
 
-  const directCommit = async () => {
+  const directCommit = async (push: boolean) => {
     if (onBeforeCommit) await onBeforeCommit();
-    await runSync(() => gitCommitPush(cwd, message), "committed & pushed");
+    await runSync(
+      () => (push ? gitCommitPush(cwd, message) : gitCommit(cwd, message)),
+      push ? "committed & pushed" : "committed",
+    );
     setMessage("");
   };
 
@@ -189,14 +199,24 @@ export default function GitPanel({
             >
               Ask agent to commit &amp; push
             </button>
-            <button
-              className="btn-ghost"
-              onClick={directCommit}
-              disabled={busy || !message.trim() || changes.length === 0}
-              title="Commit & push directly via git"
-            >
-              {busy ? "Working…" : "Commit & push (direct)"}
-            </button>
+            <div className="gp-direct-row">
+              <button
+                className="btn-ghost"
+                onClick={() => void directCommit(false)}
+                disabled={busy || !message.trim() || changes.length === 0}
+                title="Stage all & commit locally (no push)"
+              >
+                {busy ? "Working…" : "Commit"}
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={() => void directCommit(true)}
+                disabled={busy || !message.trim() || changes.length === 0}
+                title="Stage all, commit, and push"
+              >
+                {busy ? "Working…" : "Commit & push"}
+              </button>
+            </div>
             {result && <div className="gp-ok">{result}</div>}
             {error && <div className="gp-err">{error}</div>}
           </div>

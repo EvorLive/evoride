@@ -26,7 +26,7 @@ export default function EditsPanel({
         .then((e) => alive && setEdits(e))
         .catch(() => {});
     poll();
-    const t = setInterval(poll, 3000);
+    const t = setInterval(() => !document.hidden && poll(), 3000);
     return () => {
       alive = false;
       clearInterval(t);

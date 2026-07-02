@@ -34,6 +34,7 @@ const TasksPanel = lazy(() => import("./components/TasksPanel"));
 const EditsPanel = lazy(() => import("./components/EditsPanel"));
 import { getCurrentWindow, isTauri, listen, openUrl } from "./lib/bridge";
 import { midTruncate } from "./lib/util";
+import { toastError } from "./lib/toast";
 import * as api from "./lib/tauri";
 import type {
   AgentRecord,
@@ -462,20 +463,43 @@ export default function App() {
     }
   }, [paletteOpen, paletteMode, project]);
 
-  // Poll all agents (running + stopped) for the grid's "resume inactive" list.
+  // ONE agent-list poll: all agents (grid's "resume inactive" list) and running
+  // agents (multi-project rail) together, instead of two staggered timers
+  // hitting the backend independently every 3-4s.
   useEffect(() => {
     let alive = true;
-    const poll = () =>
+    const poll = () => {
       api.allAgents().then((a) => alive && setAllAgentList(a)).catch(() => {});
+      if (!demoOn) {
+        api.runningAgents().then((r) => alive && setRunningList(r)).catch(() => {});
+      }
+    };
     poll();
     const t = setInterval(() => !document.hidden && poll(), 4000);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, [agents]);
+  }, [agents, demoOn]);
 
-  // Poll git for the project.
+  // Git state: instant refresh when the FS watcher reports working-tree changes
+  // (agent edits, external tools), plus a slow fallback poll for what the
+  // watcher can't see (.git-only changes like a CLI commit — .git is filtered
+  // out of the watch). `fsTick` also re-runs GitPanel's changes fetch.
+  const [fsTick, setFsTick] = useState(0);
+  useEffect(() => {
+    if (!project) return;
+    let un: (() => void) | undefined;
+    api
+      .onFsChanged((root) => {
+        if (root === project.path) setFsTick((n) => n + 1);
+      })
+      .then((u) => {
+        un = u;
+      });
+    return () => un?.();
+  }, [project]);
+
   useEffect(() => {
     if (!project) {
       setGit(null);
@@ -485,12 +509,12 @@ export default function App() {
     const poll = () =>
       api.gitStatus(project.path).then((g) => alive && setGit(g)).catch(() => {});
     poll();
-    const t = setInterval(() => !document.hidden && poll(), 4000);
+    const t = setInterval(() => !document.hidden && poll(), 10000);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, [project]);
+  }, [project, fsTick]);
 
   // Keep a sensible active agent: hold the current one while it still exists,
   // otherwise fall back to the project overview/home (null) rather than auto-
@@ -569,7 +593,7 @@ export default function App() {
   const onResumeToGrid = async (id: string) => {
     const alreadyTiled = gridAgents.includes(id);
     if (!alreadyTiled && gridFull) return;
-    await api.resumeAgent(id).catch(() => {});
+    await api.resumeAgent(id).catch((e) => toastError("Couldn't resume agent", e));
     addLive(id);
     if (!alreadyTiled) {
       setActiveTiles((prev) => (prev.length >= MAX_TILES ? prev : [...prev, id]));
@@ -747,7 +771,10 @@ export default function App() {
   };
   const addTaskGlobal = (title: string, projectId: string, plannedFor: string) =>
     guardedAdd(title, projectId, () =>
-      void api.addTask(projectId, title, undefined, plannedFor).then(refreshAllTasks).catch(() => {}),
+      void api
+        .addTask(projectId, title, undefined, plannedFor)
+        .then(refreshAllTasks)
+        .catch((e) => toastError("Couldn't create the task", e)),
     );
   // A Jira-linked task syncs its status back to the issue, so confirm first —
   // "this is a Jira task, should I update Jira too?". Non-Jira tasks pass through.
@@ -759,12 +786,21 @@ export default function App() {
     );
   const cycleTaskGlobal = (t: Task) => {
     if (!jiraCycleOk(t)) return;
-    api.updateTask(t.id, NEXT_STATUS[t.status]).then(refreshAllTasks).catch(() => {});
+    api
+      .updateTask(t.id, NEXT_STATUS[t.status])
+      .then(refreshAllTasks)
+      .catch((e) => toastError("Couldn't update the task", e));
   };
   const assignTaskGlobal = (id: string, projectId: string) =>
-    api.assignTask(id, projectId).then(refreshAllTasks).catch(() => {});
+    api
+      .assignTask(id, projectId)
+      .then(refreshAllTasks)
+      .catch((e) => toastError("Couldn't move the task", e));
   const delTaskGlobal = (id: string) =>
-    api.deleteTask(id).then(refreshAllTasks).catch(() => {});
+    api
+      .deleteTask(id)
+      .then(refreshAllTasks)
+      .catch((e) => toastError("Couldn't delete the task", e));
   /// Freeform note → AI helper extracts tasks + matches projects. Resolves to the
   /// created tasks (or throws with a message TasksView surfaces inline).
   const planTasksGlobal = async (note: string) => {
@@ -831,7 +867,14 @@ export default function App() {
     subdir?: string;
   }): Promise<AgentRecord | null> => {
     if (!project) return null;
-    const rec = await api.spawnAgent({ projectId: project.id, ...args });
+    let rec: AgentRecord;
+    try {
+      rec = await api.spawnAgent({ projectId: project.id, ...args });
+    } catch (e) {
+      // A click that silently does nothing reads as "the app is broken".
+      toastError(`Couldn't start "${args.title}"`, e);
+      return null;
+    }
     addLive(rec.id);
     setAgents((prev) => [rec, ...prev.filter((a) => a.id !== rec.id)]);
     setActiveAgentId(rec.id);
@@ -915,8 +958,9 @@ export default function App() {
     });
     try {
       await api.resumeAgent(id);
-    } catch {
+    } catch (e) {
       removeLive(id);
+      toastError("Couldn't resume agent", e);
     }
   };
   const resumeAgent = (src: AgentRecord) => void resumeExisting(src.id);
@@ -1317,19 +1361,7 @@ export default function App() {
     };
   }, [project]);
 
-  // Poll running agents across all projects (for the rail). Frozen in demo mode.
-  useEffect(() => {
-    if (demoOn) return;
-    let alive = true;
-    const poll = () =>
-      api.runningAgents().then((r) => alive && setRunningList(r)).catch(() => {});
-    poll();
-    const t = setInterval(() => !document.hidden && poll(), 3000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [agents]);
+  // (Running agents are polled together with the all-agents list above.)
 
   // Global "agent waiting for input" listener.
   useEffect(() => {
@@ -1522,18 +1554,27 @@ export default function App() {
   const addTask = (title: string) => {
     if (!project) return;
     guardedAdd(title, project.id, () =>
-      void api.addTask(project.id, title).then((t) => setTasks((p) => [...p, t])),
+      void api
+        .addTask(project.id, title)
+        .then((t) => setTasks((p) => [...p, t]))
+        .catch((e) => toastError("Couldn't create the task", e)),
     );
   };
   const cycleTask = (t: Task) => {
     if (!jiraCycleOk(t)) return;
     const next = NEXT_STATUS[t.status];
-    api.updateTask(t.id, next).then(() =>
-      setTasks((p) => p.map((x) => (x.id === t.id ? { ...x, status: next } : x))),
-    );
+    api
+      .updateTask(t.id, next)
+      .then(() =>
+        setTasks((p) => p.map((x) => (x.id === t.id ? { ...x, status: next } : x))),
+      )
+      .catch((e) => toastError("Couldn't update the task", e));
   };
   const delTask = (id: string) =>
-    api.deleteTask(id).then(() => setTasks((p) => p.filter((x) => x.id !== id)));
+    api
+      .deleteTask(id)
+      .then(() => setTasks((p) => p.filter((x) => x.id !== id)))
+      .catch((e) => toastError("Couldn't delete the task", e));
   // Replace a task in local state (after a backend mutation returns the new row).
   const patchTask = (t: Task | null) => {
     if (!t) return;
@@ -1586,10 +1627,13 @@ export default function App() {
     />
   );
   const setTaskDesc = (id: string, description: string) => {
-    api.setTaskDescription(id, description).then(() => {
-      setTasks((p) => p.map((x) => (x.id === id ? { ...x, description } : x)));
-      setAllTasksList((p) => p.map((x) => (x.id === id ? { ...x, description } : x)));
-    });
+    api
+      .setTaskDescription(id, description)
+      .then(() => {
+        setTasks((p) => p.map((x) => (x.id === id ? { ...x, description } : x)));
+        setAllTasksList((p) => p.map((x) => (x.id === id ? { ...x, description } : x)));
+      })
+      .catch((e) => toastError("Couldn't save the description", e));
   };
   const breakdownTaskH = (id: string) => api.breakdownTask(id).then(patchTask);
   const toggleStepH = (taskId: string, stepId: string, status: "todo" | "doing" | "done") =>
@@ -1654,8 +1698,15 @@ export default function App() {
     () =>
       agents
         .filter((a) => live.has(a.id))
-        .map((a) => ({ id: a.id, title: a.title, waiting: waitingAgents.has(a.id) })),
-    [agents, live, waitingAgents],
+        .map((a) => ({
+          id: a.id,
+          title: a.title,
+          waiting: waitingAgents.has(a.id),
+          options: waitingOptions[a.id] ?? [],
+          question: waitingQuestion[a.id],
+          textMode: waitingTextMode[a.id] ?? false,
+        })),
+    [agents, live, waitingAgents, waitingOptions, waitingQuestion, waitingTextMode],
   );
 
   const runningServiceMap = useMemo(() => {
@@ -2437,6 +2488,7 @@ export default function App() {
                 onRefreshStatus={refreshGitStatus}
                 onOpenDiff={(file) => setDiffView({ file })}
                 onBeforeCommit={beforeCommit}
+                refreshSignal={fsTick}
               />
             }
             tasks={
@@ -2914,6 +2966,7 @@ export default function App() {
                       setActiveAgentId(id);
                     }}
                     onContinue={(id) => acceptAgent(id)}
+                    onPick={pickOption}
                     onAdd={addTask}
                     onCycle={cycleTask}
                     onDelete={(t) => delTask(t.id)}
@@ -2946,6 +2999,7 @@ export default function App() {
                 onRefreshStatus={refreshGitStatus}
                 onOpenDiff={(file) => setDiffView({ file })}
                 onBeforeCommit={beforeCommit}
+                refreshSignal={fsTick}
               />
             )}
             {rightPanel === "edits" && (

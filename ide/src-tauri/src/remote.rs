@@ -21,6 +21,9 @@ use crate::session::SessionManager;
 use crate::settings::SettingsStore;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// When polls fail (server down, network out), back off up to this cap instead
+/// of retrying every 3 s forever. One success snaps back to POLL_INTERVAL.
+const POLL_MAX_INTERVAL: Duration = Duration::from_secs(60);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
@@ -202,9 +205,11 @@ fn format_reply(r: &PendingReply) -> String {
 /// of the app; a cheap no-op tick when remote control is off/unconfigured.
 pub fn spawn_poller(app: AppHandle) {
     std::thread::spawn(move || {
+        let mut interval = POLL_INTERVAL;
         loop {
-            std::thread::sleep(POLL_INTERVAL);
+            std::thread::sleep(interval);
             let Some(cfg) = current_config(&app) else {
+                interval = POLL_INTERVAL; // unconfigured is a cheap no-op, not a failure
                 continue;
             };
             let Some(cl) = client() else {
@@ -215,8 +220,14 @@ pub fn spawn_poller(app: AppHandle) {
                 .bearer_auth(&cfg.token)
                 .send();
             let replies: Vec<PendingReply> = match resp {
-                Ok(r) if r.status().is_success() => r.json().unwrap_or_default(),
-                _ => continue,
+                Ok(r) if r.status().is_success() => {
+                    interval = POLL_INTERVAL; // reachable again — resume normal cadence
+                    r.json().unwrap_or_default()
+                }
+                _ => {
+                    interval = (interval * 2).min(POLL_MAX_INTERVAL);
+                    continue;
+                }
             };
             if replies.is_empty() {
                 continue;

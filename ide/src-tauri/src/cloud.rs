@@ -25,7 +25,10 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 
-const RECONNECT_SECS: u64 = 5;
+/// Reconnect backoff bounds: start fast, double on repeated failures so a dead
+/// relay (or a fleet of hosts after a relay restart) isn't hammered every 5 s.
+const RECONNECT_MIN_SECS: u64 = 1;
+const RECONNECT_MAX_SECS: u64 = 60;
 
 /// Managed state: the running cloud link (if any).
 #[derive(Default)]
@@ -173,15 +176,20 @@ async fn run_link(
     stop: Arc<AtomicBool>,
 ) {
     let url = host_url(&base, &token);
+    let mut delay = RECONNECT_MIN_SECS;
     while !stop.load(Ordering::Relaxed) {
         match tokio_tungstenite::connect_async(&url).await {
-            Ok((ws, _)) => serve_session(&app, ws, &key, &tx, &stop).await,
-            Err(e) => eprintln!("cloud: connect {base}: {e}"),
+            Ok((ws, _)) => {
+                delay = RECONNECT_MIN_SECS; // connected — next failure starts fresh
+                serve_session(&app, ws, &key, &tx, &stop).await;
+            }
+            Err(e) => eprintln!("cloud: connect {base}: {e} (retry in {delay}s)"),
         }
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(RECONNECT_SECS)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+        delay = (delay * 2).min(RECONNECT_MAX_SECS);
     }
 }
 

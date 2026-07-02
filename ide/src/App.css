@@ -2696,6 +2696,58 @@ body {
 .phome-preview-continue:hover {
   background: color-mix(in srgb, var(--live) 26%, transparent);
 }
+/* Numbered-choice menu on a halted tile — the agent's options, inline. */
+.phome-preview-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--wait, #f5b301) 7%, var(--surface));
+}
+.phome-preview-q {
+  flex-basis: 100%;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.phome-preview-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg);
+  cursor: pointer;
+}
+.phome-preview-choice:hover {
+  border-color: color-mix(in srgb, var(--live) 40%, var(--border));
+}
+.phome-preview-choice.primary {
+  border-color: color-mix(in srgb, var(--accent, var(--live)) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent, var(--live)) 16%, var(--surface-2));
+  font-weight: 600;
+}
+.phome-preview-choice-n {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.phome-preview-choice-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The terminal thumbnail: fixed ~100px tall, click-through to the full page. */
 .phome-preview-term {
   position: relative;
@@ -3083,6 +3135,13 @@ body {
   gap: 7px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+}
+.gp-direct-row {
+  display: flex;
+  gap: 7px;
+}
+.gp-direct-row > button {
+  flex: 1;
 }
 .gp-msg {
   background: var(--bg);
@@ -5365,6 +5424,7 @@ body {
 .notif-toast.kind-waiting { border-left-color: var(--warn); }
 .notif-toast.kind-done { border-left-color: var(--live); }
 .notif-toast.kind-error { border-left-color: var(--danger); }
+.notif-toast.kind-app-error { border-left-color: var(--danger); cursor: default; }
 .notif-toast:hover { background: var(--surface); }
 
 @keyframes notif-in {
@@ -5376,6 +5436,7 @@ body {
 .notif-icon.kind-waiting { color: var(--warn); }
 .notif-icon.kind-done { color: var(--live); }
 .notif-icon.kind-error { color: var(--danger); }
+.notif-icon.kind-app-error { color: var(--danger); }
 
 .notif-toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .notif-toast-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

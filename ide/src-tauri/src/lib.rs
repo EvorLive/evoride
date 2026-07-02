@@ -661,7 +661,9 @@ fn add_task(
     planned_for: Option<String>,
     description: Option<String>,
 ) -> Task {
-    store.add_task(&project_id, &title, agent_id, planned_for, description)
+    let t = store.add_task(&project_id, &title, agent_id, planned_for, description);
+    refresh_task_snapshots(&store, &project_id);
+    t
 }
 
 #[tauri::command]
@@ -671,6 +673,7 @@ async fn update_task(store: State<'_, Store>, id: String, status: String) -> Res
     // Jira transition (AI-mapped onto this board's custom workflow). Status only —
     // no comment is posted. Best-effort + off-thread.
     if let Some(task) = store.get_task(&id) {
+        refresh_task_snapshots(&store, &task.project_id);
         if task.source == "jira" {
             if let (Some(key), Some(cfg)) = (task.external_id, secrets::load_jira()) {
                 let st = status.clone();
@@ -712,13 +715,19 @@ fn jira_push_status(cfg: &secrets::JiraConfig, key: &str, status: &str) {
 
 #[tauri::command]
 fn set_task_description(store: State<Store>, id: String, description: String) {
-    store.set_task_description(&id, &description)
+    store.set_task_description(&id, &description);
+    if let Some(t) = store.get_task(&id) {
+        refresh_task_snapshots(&store, &t.project_id);
+    }
 }
 
 /// Replace a task's breakdown steps.
 #[tauri::command]
 fn set_task_steps(store: State<Store>, id: String, steps: Vec<store::Step>) {
-    store.set_task_steps(&id, &steps)
+    store.set_task_steps(&id, &steps);
+    if let Some(t) = store.get_task(&id) {
+        refresh_task_snapshots(&store, &t.project_id);
+    }
 }
 
 /// Update one step's status within a task's breakdown.
@@ -731,6 +740,7 @@ fn update_step(store: State<Store>, task_id: String, step_id: String, status: St
         }
     }
     store.set_task_steps(&task_id, &task.steps);
+    refresh_task_snapshots(&store, &task.project_id);
     store.get_task(&task_id)
 }
 
@@ -749,6 +759,7 @@ async fn breakdown_task(store: State<'_, Store>, id: String) -> Result<Task, Str
         return Err("The architect couldn't break this down.".into());
     }
     store.set_task_steps(&id, &steps);
+    refresh_task_snapshots(&store, &task.project_id);
     store.get_task(&id).ok_or_else(|| "task vanished".into())
 }
 
@@ -765,12 +776,31 @@ pub fn write_project_tasks(store: &Store, project_root: &str, project_id: &str, 
     let open: Vec<Task> = store
         .list_tasks(project_id)
         .into_iter()
-        .filter(|t| t.status != "done")
+        .filter(|t| t.status != "done" && t.status != "verified")
         .collect();
     if let Ok(json) = serde_json::to_string_pretty(&open) {
         let _ = std::fs::write(&path, json);
     }
     path.to_string_lossy().to_string()
+}
+
+/// Rewrite the `$EVORIDE_PROJECT_TASKS` snapshot for every RUNNING agent of a
+/// project, so agents see tasks created/updated AFTER they spawned (the
+/// snapshot used to be written only at spawn time and went stale for the whole
+/// session). Best-effort and cheap: a handful of small JSON writes, only on
+/// task mutations.
+pub(crate) fn refresh_task_snapshots(store: &Store, project_id: &str) {
+    if project_id.is_empty() {
+        return;
+    }
+    let Some(project) = store.get_project(project_id) else {
+        return;
+    };
+    for a in store.list_agents(project_id) {
+        if a.status == "running" {
+            let _ = write_project_tasks(store, &project.path, project_id, &a.id);
+        }
+    }
 }
 
 /// Pull an agent's reported task updates (from `$EVORIDE_TASKS`), in order, and
@@ -891,6 +921,14 @@ pub(crate) fn apply_agent_tasks(store: &Store, project: &str, agent_id: &str) ->
         }
     }
 
+    // The agent changed the board — let every running agent in the project see
+    // the new state (including OTHER agents working alongside this one).
+    if !touched.is_empty() {
+        if let Some(pid) = &project_id {
+            refresh_task_snapshots(store, pid);
+        }
+    }
+
     touched
         .into_iter()
         .filter_map(|id| store.get_task(&id))
@@ -929,13 +967,26 @@ async fn plan_tasks(store: State<'_, Store>, input: String) -> Result<Vec<Task>,
         }
         created.push(t);
     }
+    for pid in created
+        .iter()
+        .map(|t| t.project_id.clone())
+        .collect::<std::collections::HashSet<_>>()
+    {
+        refresh_task_snapshots(&store, &pid);
+    }
     Ok(created)
 }
 
 /// Assign a task to a project ("" = unassigned).
 #[tauri::command]
 fn assign_task(store: State<Store>, id: String, project_id: String) {
-    store.set_task_project(&id, &project_id)
+    let old = store.get_task(&id).map(|t| t.project_id);
+    store.set_task_project(&id, &project_id);
+    // The task moved: both the losing and gaining projects' agents need fresh snapshots.
+    if let Some(old_pid) = old.filter(|p| p != &project_id) {
+        refresh_task_snapshots(&store, &old_pid);
+    }
+    refresh_task_snapshots(&store, &project_id);
 }
 
 /// Link a task to the agent now working it (so its reported status round-trips).
@@ -946,7 +997,11 @@ fn link_task_agent(store: State<Store>, id: String, agent_id: String) {
 
 #[tauri::command]
 fn delete_task(store: State<Store>, id: String) {
-    store.delete_task(&id)
+    let pid = store.get_task(&id).map(|t| t.project_id);
+    store.delete_task(&id);
+    if let Some(pid) = pid {
+        refresh_task_snapshots(&store, &pid);
+    }
 }
 
 /// Append a line to a task's description — used to merge a duplicate's wording
@@ -956,6 +1011,9 @@ fn append_task_note(store: State<Store>, id: String, note: String) {
     let n = note.trim();
     if !n.is_empty() {
         store.append_task_description(&id, n);
+        if let Some(t) = store.get_task(&id) {
+            refresh_task_snapshots(&store, &t.project_id);
+        }
     }
 }
 
@@ -1105,6 +1163,7 @@ async fn jira_sync(store: State<'_, Store>) -> Result<JiraSyncResult, String> {
 
     let pulled = issues.len();
     let (mut created, mut updated, mut unmapped) = (0, 0, 0);
+    let mut touched_projects: std::collections::HashSet<String> = std::collections::HashSet::new();
     for it in issues {
         // Don't flood the board with already-done Jira issues: only sync a done
         // issue if it's already tracked here (e.g. we completed it in EvorIDE).
@@ -1130,7 +1189,14 @@ async fn jira_sync(store: State<'_, Store>) -> Result<JiraSyncResult, String> {
             } else {
                 updated += 1;
             }
+            if !pid.is_empty() {
+                touched_projects.insert(pid);
+            }
         }
+    }
+    // Synced tasks should reach running agents' snapshots without a re-spawn.
+    for pid in &touched_projects {
+        refresh_task_snapshots(&store, pid);
     }
     Ok(JiraSyncResult {
         pulled,
@@ -1371,6 +1437,12 @@ fn git_changes(cwd: String) -> Vec<FileChange> {
 #[tauri::command]
 fn git_diff(cwd: String, file: Option<String>) -> String {
     git::diff(&cwd, file.as_deref())
+}
+
+#[tauri::command]
+fn git_commit(lock: State<GitLock>, cwd: String, message: String) -> Result<String, String> {
+    let _g = lock.0.lock().unwrap();
+    git::commit(&cwd, &message)
 }
 
 #[tauri::command]
@@ -2083,6 +2155,7 @@ pub fn run() {
             git_status,
             git_changes,
             git_diff,
+            git_commit,
             git_commit_push,
             git_fetch,
             git_branches,

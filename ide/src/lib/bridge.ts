@@ -155,6 +155,8 @@ class CloudLink {
   private handlers = new Map<string, Set<Handler>>();
   private enc = new TextEncoder();
   private dec = new TextDecoder();
+  /** Reconnect delay (ms), doubling on failure so a dead relay isn't hammered. */
+  private backoff = 1000;
 
   constructor(cfg: CloudCfg) {
     this.key = hexToBytes(cfg.key);
@@ -188,14 +190,26 @@ class CloudLink {
       const wsUrl = this.relay.replace(/^http/, "ws") + `/link/join/${encodeURIComponent(this.device)}`;
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
-      ws.onopen = () => resolve();
+      ws.onopen = () => {
+        this.backoff = 1000;
+        resolve();
+      };
       ws.onerror = () => reject(new Error("cloud link failed"));
       ws.onmessage = (e) => this.onFrame(new Uint8Array(e.data as ArrayBuffer));
       ws.onclose = () => {
         this.ws = null;
-        // Fail in-flight calls; listeners reconnect on next use.
+        // Fail in-flight calls so callers see the drop instead of hanging.
         for (const p of this.pending.values()) p.reject(new Error("cloud link closed"));
         this.pending.clear();
+        // Live event subscriptions would otherwise go silently dead until the
+        // next invoke — reconnect for them with backoff.
+        if (this.handlers.size > 0) {
+          const delay = this.backoff + Math.floor(Math.random() * (this.backoff / 2));
+          this.backoff = Math.min(this.backoff * 2, 30000);
+          setTimeout(() => {
+            if (!this.ws && this.handlers.size > 0) void this.connect().catch(() => {});
+          }, delay);
+        }
       };
       this.ws = ws;
     }).finally(() => {
@@ -289,6 +303,17 @@ const handlers = new Map<string, Set<Handler>>();
 let socket: WebSocket | null = null;
 let connecting = false;
 
+// Reconnect with exponential backoff + jitter so a restarting daemon isn't
+// hammered every second by every open tab; a successful open resets the delay.
+const WS_BACKOFF_MIN = 1000;
+const WS_BACKOFF_MAX = 30000;
+let wsBackoff = WS_BACKOFF_MIN;
+const nextBackoff = (): number => {
+  const d = wsBackoff;
+  wsBackoff = Math.min(wsBackoff * 2, WS_BACKOFF_MAX);
+  return d + Math.floor(Math.random() * (d / 2));
+};
+
 async function ensureSocket(): Promise<void> {
   if (isTauri() || connecting || socket) return;
   connecting = true;
@@ -296,6 +321,9 @@ async function ensureSocket(): Promise<void> {
     const token = await ensureToken();
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/events?token=${encodeURIComponent(token)}`);
+    ws.onopen = () => {
+      wsBackoff = WS_BACKOFF_MIN;
+    };
     ws.onmessage = (e) => {
       try {
         const { topic, payload } = JSON.parse(e.data as string);
@@ -308,7 +336,7 @@ async function ensureSocket(): Promise<void> {
     ws.onclose = () => {
       socket = null;
       // Reconnect if anyone is still listening.
-      if (handlers.size) setTimeout(() => void ensureSocket(), 1000);
+      if (handlers.size) setTimeout(() => void ensureSocket(), nextBackoff());
     };
     ws.onerror = () => ws.close();
     socket = ws;

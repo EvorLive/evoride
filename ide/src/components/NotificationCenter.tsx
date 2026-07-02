@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../lib/tauri";
 import type { AgentRecord } from "../lib/tauri";
+import { onToast } from "../lib/toast";
 
 // A global notification surface: toasts pop in the corner — and a bell/inbox
 // keeps a history — whenever ANY agent across ANY project needs your input or
@@ -13,11 +14,14 @@ import type { AgentRecord } from "../lib/tauri";
 // allows many listeners per event), and resolves agent/project names itself, so
 // wiring it into App is a single mount line.
 
-type NotifKind = "waiting" | "done" | "error";
+type NotifKind = "waiting" | "done" | "error" | "app-error";
 
 interface Notif {
   key: string;
-  agent: AgentRecord;
+  /** Absent for app-errors (a failed UI action has no agent to jump to). */
+  agent?: AgentRecord;
+  /** Headline: the agent's title, or what failed for app-errors. */
+  title: string;
   projectName: string;
   kind: NotifKind;
   question?: string;
@@ -32,6 +36,7 @@ const KIND_META: Record<NotifKind, { icon: string; label: string }> = {
   waiting: { icon: "codicon-comment-discussion", label: "needs you" },
   done: { icon: "codicon-pass", label: "finished" },
   error: { icon: "codicon-error", label: "exited with errors" },
+  "app-error": { icon: "codicon-warning", label: "action failed" },
 };
 
 export default function NotificationCenter({
@@ -72,8 +77,8 @@ export default function NotificationCenter({
     setNotifs((prev) => {
       // Collapse to one live "waiting" notification per agent.
       const filtered =
-        n.kind === "waiting"
-          ? prev.filter((p) => !(p.kind === "waiting" && p.agent.id === n.agent.id))
+        n.kind === "waiting" && n.agent
+          ? prev.filter((p) => !(p.kind === "waiting" && p.agent?.id === n.agent?.id))
           : prev;
       return [n, ...filtered].slice(0, MAX_NOTIFS);
     });
@@ -104,7 +109,7 @@ export default function NotificationCenter({
         if (!waiting) {
           // Resolved (answered elsewhere) — drop any pending waiting notif/toast.
           setNotifs((prev) =>
-            prev.filter((p) => !(p.kind === "waiting" && p.agent.id === id)),
+            prev.filter((p) => !(p.kind === "waiting" && p.agent?.id === id)),
           );
           return;
         }
@@ -114,6 +119,7 @@ export default function NotificationCenter({
           push({
             key: `wait:${id}`,
             agent,
+            title: agent.title,
             projectName: resolveProjectName(agent.project_id),
             kind: "waiting",
             question: question || undefined,
@@ -139,6 +145,7 @@ export default function NotificationCenter({
           push({
             key: `exit:${id}:${Date.now()}`,
             agent,
+            title: agent.title,
             projectName: resolveProjectName(agent.project_id),
             kind: info?.hasError ? "error" : "done",
             at: Date.now(),
@@ -151,6 +158,25 @@ export default function NotificationCenter({
       });
     return () => un?.();
   }, [lookupAgent, push]);
+
+  // Failed user actions reported anywhere in the app (spawn, task ops, saves…)
+  // surface here instead of vanishing into a silent catch.
+  const errSeq = useRef(0);
+  useEffect(
+    () =>
+      onToast((t) => {
+        push({
+          key: `apperr:${t.at}:${errSeq.current++}`,
+          title: t.title,
+          projectName: "",
+          kind: "app-error",
+          question: t.detail,
+          at: t.at,
+          read: false,
+        });
+      }),
+    [push],
+  );
 
   // ⌘⇧N / Ctrl⇧N toggles the inbox from anywhere.
   useEffect(() => {
@@ -177,8 +203,10 @@ export default function NotificationCenter({
   };
 
   const jump = (n: Notif) => {
-    onJump(n.agent);
-    setOpen(false);
+    if (n.agent) {
+      onJump(n.agent);
+      setOpen(false);
+    }
     setToasts((prev) => prev.filter((k) => k !== n.key));
     setNotifs((prev) => prev.map((x) => (x.key === n.key ? { ...x, read: true } : x)));
   };
@@ -217,9 +245,10 @@ export default function NotificationCenter({
                   <button key={n.key} className="notif-item" onClick={() => jump(n)}>
                     <i className={`codicon ${KIND_META[n.kind].icon} notif-icon kind-${n.kind}`} />
                     <span className="notif-item-body">
-                      <span className="notif-item-title">{n.agent.title}</span>
+                      <span className="notif-item-title">{n.title}</span>
                       <span className="notif-item-sub">
-                        {KIND_META[n.kind].label} · {n.projectName}
+                        {KIND_META[n.kind].label}
+                        {n.projectName ? ` · ${n.projectName}` : ""}
                       </span>
                       {n.question && <span className="notif-item-q">{n.question}</span>}
                     </span>
@@ -255,9 +284,10 @@ export default function NotificationCenter({
           <button key={n.key} className={`notif-toast kind-${n.kind}`} onClick={() => jump(n)}>
             <i className={`codicon ${KIND_META[n.kind].icon} notif-icon`} />
             <span className="notif-toast-body">
-              <span className="notif-toast-title">{n.agent.title}</span>
+              <span className="notif-toast-title">{n.title}</span>
               <span className="notif-toast-sub">
-                {KIND_META[n.kind].label} · {n.projectName}
+                {KIND_META[n.kind].label}
+                {n.projectName ? ` · ${n.projectName}` : ""}
               </span>
               {n.question && <span className="notif-toast-q">{n.question}</span>}
             </span>

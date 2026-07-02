@@ -63,14 +63,18 @@ export default function StatusBar({
               <button
                 className="status-git"
                 onClick={() => setBranchOpen((o) => !o)}
-                title="Switch branch"
+                title={
+                  git.detached
+                    ? "Detached HEAD — pick a branch to get back on one"
+                    : "Switch branch"
+                }
               >
-                ⎇ {git.branch} ▾
+                {git.detached ? `➦ ${git.branch} (detached)` : `⎇ ${git.branch}`} ▾
               </button>
               {branchOpen && cwd && (
                 <BranchSwitcher
                   cwd={cwd}
-                  current={git.branch}
+                  current={git.detached ? "" : git.branch}
                   onClose={() => setBranchOpen(false)}
                   onChanged={onGitRefresh}
                 />

@@ -74,6 +74,8 @@ export interface GitStatus {
   dirty: number;
   ahead: number;
   behind: number;
+  /** Detached HEAD — `branch` is a short commit SHA, not a branch name. */
+  detached: boolean;
 }
 
 export interface FileEntry {
@@ -326,6 +328,9 @@ export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd 
 export const gitChanges = (cwd: string) => invoke<FileChange[]>("git_changes", { cwd });
 export const gitDiff = (cwd: string, file?: string) =>
   invoke<string>("git_diff", { cwd, file });
+/** Stage everything and commit — no push (safe on flaky networks). */
+export const gitCommit = (cwd: string, message: string) =>
+  invoke<string>("git_commit", { cwd, message });
 export const gitCommitPush = (cwd: string, message: string) =>
   invoke<string>("git_commit_push", { cwd, message });
 export const gitFetch = (cwd: string) => invoke("git_fetch", { cwd });

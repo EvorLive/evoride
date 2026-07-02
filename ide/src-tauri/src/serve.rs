@@ -140,6 +140,10 @@ pub fn dispatch(c: &Ctx, cmd: &str, a: &Value) -> Result<Value, String> {
         "git_changes" => to_value(git::changes(&sarg(a, "cwd")?)),
         "git_diff" => to_value(git::diff(&sarg(a, "cwd")?, osarg(a, "file").as_deref())),
         "git_branches" => to_value(git::branches(&sarg(a, "cwd")?)),
+        "git_commit" => {
+            let _g = c.git_lock.lock().unwrap();
+            to_value(git::commit(&sarg(a, "cwd")?, &sarg(a, "message")?)?)
+        }
         "git_commit_push" => {
             let _g = c.git_lock.lock().unwrap();
             to_value(git::commit_and_push(&sarg(a, "cwd")?, &sarg(a, "message")?)?)
